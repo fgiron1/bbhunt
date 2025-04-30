@@ -4,11 +4,10 @@ use anyhow::{Result, Context};
 use dialoguer::{theme::ColorfulTheme, Input, Confirm};
 use serde_json::Value;
 
-use crate::core::{
-    config::BBHuntConfig,
-    plugin::{PluginManager, PluginResult},
-    resource_manager::ResourceManager,
-};
+use crate::core::report::{Report, ReportSummary, Finding, Evidence, RequestResponse, Reference, ReportFormat, ReportManager, Severity};
+use crate::core::target::{TargetManager, Target, TargetSpecifier, target_specifier_to_string};
+use crate::core::parallel::TaskResult;
+use crate::core::task_generator::{TaskGenerator, TaskGeneratorConfig, TaskType};
 
 #[derive(Parser)]
 #[command(name = "bbhunt")]
@@ -596,9 +595,9 @@ impl BBHuntCli {
     fn load_scan_results_for_target(target: &str) -> Result<Vec<crate::core::parallel::TaskResult>> {
         // In a real implementation, you would load results from a database or file
         // This is a simplified placeholder
-        let results_dir = PathBuf::from("./results");
-        let files = std::fs::read_dir(results_dir)?;
-        
+        let results_dir = std::path::PathBuf::from("./results");
+        if !results_dir.exists() { return Err(anyhow::anyhow!("Results directory not found")); }
+        let files = std::fs::read_dir(results_dir).context("Failed to read results directory")?;
         let mut all_results = Vec::new();
         
         for file in files {

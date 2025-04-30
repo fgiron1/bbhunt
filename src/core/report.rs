@@ -183,7 +183,7 @@ impl ReportGenerator for MarkdownReportGenerator {
                 content.push_str(&format!("{}\n\n", remediation));
             }
             
-            if !finding.references.isEmpty() {
+            if !finding.references.is_empty() {
                 content.push_str("**References:**\n\n");
                 for reference in &finding.references {
                     content.push_str(&format!("- [{}]({})\n", reference.title, reference.url));
