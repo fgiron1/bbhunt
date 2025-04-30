@@ -1,0 +1,201 @@
+use std::sync::Arc;
+use std::path::Path;
+use anyhow::Result;
+use tokio::sync::{mpsc, Mutex, Semaphore};
+use tracing::{info, debug, warn, error};
+
+use crate::core::Plugin::PluginManager;
+use super::task::{TaskDefinition, TaskResult, TaskStatus};
+
+/// Executor for running tasks in parallel
+pub struct ParallelExecutor {
+    max_concurrent_tasks: usize,
+    semaphore: Arc<Semaphore>,
+    plugin_manager: Arc<Mutex<PluginManager>>,
+}
+
+impl ParallelExecutor {
+    /// Create a new parallel executor
+    pub fn new(max_concurrent_tasks: usize, plugin_manager: PluginManager) -> Self {
+        Self {
+            max_concurrent_tasks,
+            semaphore: Arc::new(Semaphore::new(max_concurrent_tasks)),
+            plugin_manager: Arc::new(Mutex::new(plugin_manager)),
+        }
+    }
+    
+    /// Execute a list of tasks
+    pub async fn execute_tasks(&self, tasks: Vec<TaskDefinition>) -> Result<Vec<TaskResult>> {
+        if tasks.is_empty() {
+            warn!("No tasks to execute");
+            return Ok(Vec::new());
+        }
+        
+        info!("Executing {} tasks with max concurrency {}", tasks.len(), self.max_concurrent_tasks);
+        
+        let (tx, mut rx) = mpsc::channel(self.max_concurrent_tasks);
+        
+        // Build dependency graph
+        let mut results = Vec::new();
+        let mut completed_tasks = std::collections::HashSet::new();
+        let mut pending_tasks: Vec<&TaskDefinition> = tasks.iter().collect();
+        
+        while !pending_tasks.is_empty() {
+            // Find tasks with satisfied dependencies
+            let runnable_tasks: Vec<&TaskDefinition> = pending_tasks
+                .iter()
+                .filter(|task| task.dependencies.iter().all(|dep| completed_tasks.contains(dep)))
+                .cloned()
+                .collect();
+            
+            if runnable_tasks.is_empty() && !pending_tasks.is_empty() {
+                return Err(anyhow::anyhow!("Circular dependency detected in tasks"));
+            }
+            
+            debug!("Found {} runnable tasks", runnable_tasks.len());
+            
+            // Run tasks in parallel
+            let mut handles = Vec::new();
+            
+            for task in runnable_tasks {
+                let task_clone = task.clone();
+                let tx_clone = tx.clone();
+                let semaphore_clone = self.semaphore.clone();
+                let plugin_manager_clone = self.plugin_manager.clone();
+                
+                let handle = tokio::spawn(async move {
+                    // Acquire permit
+                    let permit = semaphore_clone.acquire().await.expect("Semaphore closed");
+                    
+                    // Execute task
+                    let result = Self::execute_task(task_clone, plugin_manager_clone).await;
+                    
+                    // Send result
+                    tx_clone.send(result).await.expect("Failed to send result");
+                    
+                    // Drop permit
+                    drop(permit);
+                });
+                
+                handles.push(handle);
+                
+                // Remove from pending
+                pending_tasks.retain(|t| t.id != task.id);
+                completed_tasks.insert(task.id.clone());
+            }
+            
+            // Wait for all tasks to complete before starting the next batch
+            for handle in handles {
+                if let Err(e) = handle.await {
+                    error!("Task execution failed: {}", e);
+                }
+            }
+        }
+        
+        // Collect results
+        drop(tx);
+        while let Some(result) = rx.recv().await {
+            results.push(result);
+        }
+        
+        info!("Completed all tasks successfully");
+        Ok(results)
+    }
+    
+    /// Execute a single task
+    async fn execute_task(
+        task: TaskDefinition, 
+        plugin_manager: Arc<Mutex<PluginManager>>
+    ) -> TaskResult {
+        debug!("Executing task {}", task.id);
+        
+        let start_time = std::time::Instant::now();
+        let mut result = TaskResult {
+            task_id: task.id.clone(),
+            plugin: task.plugin.clone(),
+            target: task.target.clone(),
+            status: TaskStatus::Running,
+            result: None,
+            error: None,
+            execution_time: std::time::Duration::from_secs(0),
+        };
+        
+        // Convert options to HashMap if provided
+        let options = task.options.and_then(|opts| {
+            serde_json::from_value(opts).ok()
+        });
+        
+        // Run plugin
+        match plugin_manager.lock().await.run_plugin(&task.plugin, &task.target, options).await {
+            Ok(plugin_result) => {
+                result.status = TaskStatus::Completed;
+                result.result = Some(plugin_result);
+            }
+            Err(e) => {
+                error!("Task execution failed: {}", e);
+                result.status = TaskStatus::Failed;
+                result.error = Some(e.to_string());
+            }
+        }
+        
+        result.execution_time = start_time.elapsed();
+        
+        debug!("Task {} completed in {:?} with status {:?}", task.id, result.execution_time, result.status);
+        
+        result
+    }
+    
+    /// Load tasks from a file
+    pub fn load_tasks(path: &Path) -> Result<Vec<TaskDefinition>> {
+        debug!("Loading tasks from {}", path.display());
+        let content = std::fs::read_to_string(path)?;
+        let tasks: Vec<TaskDefinition> = serde_json::from_str(&content)?;
+        Ok(tasks)
+    }
+    
+    /// Save tasks to a file
+    pub fn save_tasks(tasks: &[TaskDefinition], path: &Path) -> Result<()> {
+        debug!("Saving {} tasks to {}", tasks.len(), path.display());
+        let content = serde_json::to_string_pretty(tasks)?;
+        std::fs::write(path, content)?;
+        Ok(())
+    }
+    
+    /// Get the maximum number of concurrent tasks
+    pub fn max_concurrent_tasks(&self) -> usize {
+        self.max_concurrent_tasks
+    }
+    
+    /// Get statistics for task results
+    pub fn get_task_stats(results: &[TaskResult]) -> TaskStats {
+        let mut stats = TaskStats {
+            total: results.len(),
+            completed: 0,
+            failed: 0,
+            skipped: 0,
+            total_execution_time: std::time::Duration::from_secs(0),
+        };
+        
+        for result in results {
+            match result.status {
+                TaskStatus::Completed => stats.completed += 1,
+                TaskStatus::Failed => stats.failed += 1,
+                TaskStatus::Skipped => stats.skipped += 1,
+                _ => {}
+            }
+            stats.total_execution_time += result.execution_time;
+        }
+        
+        stats
+    }
+}
+
+/// Statistics for task execution
+#[derive(Debug, Clone)]
+pub struct TaskStats {
+    pub total: usize,
+    pub completed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub total_execution_time: std::time::Duration,
+}

@@ -1,13 +1,13 @@
 use anyhow::Result;
-use crate::core::cli::BBHuntCli;
+use bbhunt::cli::app::App;
 use tracing_subscriber;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Setup logging and tracing
+    // Initialize logging
     tracing_subscriber::fmt::init();
 
-    // Initialize and run the CLI
-    let cli = BBHuntCli::new();
-    cli.run().await
+    // Create and run the application
+    let app = App::new()?;
+    app.run().await
 }

@@ -1,13 +1,14 @@
-// src/core/target.rs
 use std::collections::{HashSet, HashMap};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
+use std::path::Path;
 use serde::{Serialize, Deserialize};
-use anyhow::Result;
-use url::Url;
-use ipnetwork::{IpNetwork, Ipv4Network, Ipv6Network};
+use anyhow::{Result, Context};
+use ipnetwork::IpNetwork;
 use regex::Regex;
-use async_trait::async_trait;
+use chrono::{DateTime, Utc};
+use tracing::{info, debug, warn};
 
+/// Target definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
     pub name: String,
@@ -15,9 +16,10 @@ pub struct Target {
     pub excludes: Vec<TargetSpecifier>,
     pub tags: HashMap<String, String>,
     pub notes: Option<String>,
-    pub added_at: chrono::DateTime<chrono::Utc>,
+    pub added_at: DateTime<Utc>,
 }
 
+/// Target specifier types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TargetSpecifier {
     Domain(String),
@@ -28,13 +30,14 @@ pub enum TargetSpecifier {
     Regex(String),
 }
 
-#[derive(Debug)]
+/// Manager for handling targets
 pub struct TargetManager {
     targets: HashMap<String, Target>,
     cache: HashMap<String, HashSet<String>>, // Resolved targets cache
 }
 
 impl TargetManager {
+    /// Create a new target manager
     pub fn new() -> Self {
         Self {
             targets: HashMap::new(),
@@ -42,49 +45,67 @@ impl TargetManager {
         }
     }
     
+    /// Add a new target
     pub fn add_target(&mut self, target: Target) -> Result<()> {
         if self.targets.contains_key(&target.name) {
             return Err(anyhow::anyhow!("Target with name '{}' already exists", target.name));
         }
+        
+        info!("Adding target: {}", target.name);
         self.targets.insert(target.name.clone(), target);
         Ok(())
     }
     
+    /// Remove a target
     pub fn remove_target(&mut self, name: &str) -> Result<()> {
         if !self.targets.contains_key(name) {
             return Err(anyhow::anyhow!("Target '{}' not found", name));
         }
+        
+        info!("Removing target: {}", name);
         self.targets.remove(name);
+        self.cache.remove(name);
         Ok(())
     }
     
+    /// Add an include specifier to a target
     pub fn add_include(&mut self, target_name: &str, specifier: TargetSpecifier) -> Result<()> {
         let target = self.targets.get_mut(target_name)
             .ok_or_else(|| anyhow::anyhow!("Target '{}' not found", target_name))?;
+        
+        debug!("Adding include to target {}: {:?}", target_name, specifier);
         target.includes.push(specifier);
+        
         // Invalidate cache
         self.cache.remove(target_name);
         Ok(())
     }
     
+    /// Add an exclude specifier to a target
     pub fn add_exclude(&mut self, target_name: &str, specifier: TargetSpecifier) -> Result<()> {
         let target = self.targets.get_mut(target_name)
             .ok_or_else(|| anyhow::anyhow!("Target '{}' not found", target_name))?;
+        
+        debug!("Adding exclude to target {}: {:?}", target_name, specifier);
         target.excludes.push(specifier);
+        
         // Invalidate cache
         self.cache.remove(target_name);
         Ok(())
     }
     
+    /// Get a target by name
     pub fn get_target(&self, name: &str) -> Result<&Target> {
         self.targets.get(name)
             .ok_or_else(|| anyhow::anyhow!("Target '{}' not found", name))
     }
-
+    
+    /// Get all targets
     pub fn get_all_targets(&self) -> impl Iterator<Item = (&String, &Target)> {
         self.targets.iter()
     }
     
+    /// Resolve a target into a set of concrete targets (domains, IPs)
     pub async fn resolve_target(&mut self, target_name: &str) -> Result<HashSet<String>> {
         // Check cache first
         if let Some(resolved) = self.cache.get(target_name) {
@@ -121,12 +142,9 @@ impl TargetManager {
                     }
                 }
                 TargetSpecifier::UrlPattern(pattern) => {
-                    // Implement URL pattern expansion
                     included.insert(pattern.clone());
                 }
                 TargetSpecifier::Regex(pattern) => {
-                    // For regex, we'd typically match against other entries
-                    // This is a placeholder for more complex implementation
                     included.insert(format!("regex:{}", pattern));
                 }
             }
@@ -178,18 +196,20 @@ impl TargetManager {
         // Cache the result
         self.cache.insert(target_name.to_string(), result.clone());
         
+        info!("Resolved target '{}' into {} concrete targets", target_name, result.len());
         Ok(result)
     }
     
-    // Helper method to enumerate subdomains
+    /// Helper method to enumerate subdomains
     async fn enumerate_subdomains(&self, domain: &str) -> Result<Vec<String>> {
-        // This would integrate with your subdomain enumeration plugin
-        // Simplified placeholder implementation
+        // This would integrate with subdomain enumeration plugins
+        // For now, just return a placeholder
         Ok(vec![format!("www.{}", domain)])
     }
     
+    /// Check if a host is in scope for a target
     pub async fn is_in_scope(&self, target_name: &str, host: &str) -> Result<bool> {
-        // Clone self to avoid mutable borrow issues with resolve_target
+        // We need to clone self since resolve_target borrows mutably
         let resolved = self.resolve_target(target_name).await?;
         
         // Check if the host is directly in the resolved targets
@@ -207,13 +227,17 @@ impl TargetManager {
         Ok(false)
     }
     
-    pub fn export_targets(&self, path: &std::path::Path) -> Result<()> {
+    /// Export targets to a file
+    pub fn export_targets(&self, path: &Path) -> Result<()> {
+        info!("Exporting targets to {}", path.display());
         let json = serde_json::to_string_pretty(&self.targets)?;
         std::fs::write(path, json)?;
         Ok(())
     }
     
-    pub fn import_targets(&mut self, path: &std::path::Path) -> Result<()> {
+    /// Import targets from a file
+    pub fn import_targets(&mut self, path: &Path) -> Result<()> {
+        info!("Importing targets from {}", path.display());
         let json = std::fs::read_to_string(path)?;
         let targets: HashMap<String, Target> = serde_json::from_str(&json)?;
         self.targets = targets;
@@ -222,8 +246,8 @@ impl TargetManager {
     }
 }
 
-// Helper function for target specifier formatting
-pub fn target_specifier_to_string(specifier: &TargetSpecifier) -> String {
+/// Format a target specifier for display
+pub fn format_target_specifier(specifier: &TargetSpecifier) -> String {
     match specifier {
         TargetSpecifier::Domain(domain) => format!("Domain: {}", domain),
         TargetSpecifier::Subdomain(parent, subdomain) => format!("Subdomain: {}.{}", subdomain, parent),

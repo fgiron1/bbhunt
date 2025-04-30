@@ -1,23 +1,35 @@
 # BBHunt - Bug Bounty Hunting Framework
 
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
+![Rust Version](https://img.shields.io/badge/rust-1.75+-orange.svg)
+
 ## Overview
 
 BBHunt is a comprehensive, modular bug bounty hunting framework designed to streamline and automate reconnaissance, scanning, and vulnerability detection across various targets.
 
 ## Features
 
-- 🚀 Modular Plugin Architecture
-- 🔒 Cross-Platform Support
-- 📊 Comprehensive Scanning Capabilities
-- 🛡️ Resource-Aware Execution
-- 🔍 Advanced Reconnaissance Tools
+- 🚀 **Modular Plugin Architecture**: Easily extend with new tools and capabilities
+- 🔒 **Cross-Platform Support**: Works on Linux, macOS, and Windows
+- 📊 **Comprehensive Scanning**: Integrated vulnerability scanning and reporting
+- 🛡️ **Resource-Aware Execution**: Efficient resource allocation and monitoring
+- 🔍 **Advanced Reconnaissance**: Subdomain discovery, service enumeration, and more
+- 📑 **Flexible Reporting**: Multiple output formats (JSON, Markdown, HTML)
+- 🔄 **Parallel Processing**: Run tasks concurrently for faster results
+- 🌐 **CIDR & Scope Management**: Precise target definition with inclusions/exclusions
+- 🐳 **Docker Integration**: Containerized execution for isolation and reproducibility
+- 🔌 **CI/CD Integration**: Automate security scanning with GitHub Actions and more
 
 ## Installation
 
 ### Prerequisites
 
 - Rust 1.75 or later
-- Docker (optional)
+- Optional external tools:
+ - Subfinder
+ - Amass
+ - Nuclei
+ - Nikto
 
 ### Quick Install
 
