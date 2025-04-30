@@ -2,12 +2,16 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::collections::HashMap;
+use serde_json::Value;
+use uuid::Uuid;
+use tracing::{info, warn, error};
 
 use crate::config::Config;
-use crate::core::plugin::PluginManager;
+use crate::core::plugin::{PluginManager, PluginCategory};
 use crate::core::resource::ResourceManager;
-use crate::core::target::{Target, TargetManager, TargetSpecifier};
+use crate::core::target::{Target, TargetManager, TargetSpecifier, format_target_specifier};
 use crate::engine::task::{TaskGenerator, TaskGeneratorConfig, TaskType};
+use crate::engine::parallel::ParallelExecutor;
 use crate::reporting::generator::ReportManager;
 use crate::reporting::model::{Report, ReportFormat};
 
@@ -123,36 +127,6 @@ pub enum TargetSubcommand {
         cidr: Option<Vec<String>>,
     },
     
-    /// Add includes to target scope
-    Include {
-        #[arg(help = "Target name")]
-        name: String,
-        
-        #[arg(long, help = "Domain to include")]
-        domain: Option<String>,
-        
-        #[arg(long, help = "IP address to include")]
-        ip: Option<String>,
-        
-        #[arg(long, help = "CIDR range to include")]
-        cidr: Option<String>,
-    },
-    
-    /// Add excludes to target scope
-    Exclude {
-        #[arg(help = "Target name")]
-        name: String,
-        
-        #[arg(long, help = "Domain to exclude")]
-        domain: Option<String>,
-        
-        #[arg(long, help = "IP address to exclude")]
-        ip: Option<String>,
-        
-        #[arg(long, help = "CIDR range to exclude")]
-        cidr: Option<String>,
-    },
-    
     /// List targets
     List,
     
@@ -160,18 +134,6 @@ pub enum TargetSubcommand {
     Show {
         #[arg(help = "Target name")]
         name: String,
-    },
-    
-    /// Export targets to file
-    Export {
-        #[arg(help = "Output file path")]
-        path: PathBuf,
-    },
-    
-    /// Import targets from file
-    Import {
-        #[arg(help = "Input file path")]
-        path: PathBuf,
     },
 }
 
@@ -209,69 +171,61 @@ pub async fn execute_command(
     }
 }
 
-// We'll implement these handler functions next
-async fn handle_target_command(subcommand: &TargetSubcommand, config: &mut Config) -> Result<()> {
-    // Implement target command handling
+// Placeholder for handler functions that would be implemented similarly to previous discussions
+fn handle_target_command(_: &TargetSubcommand, _: &mut Config) -> Result<()> {
     Ok(())
 }
 
 async fn handle_parallel_command(
-    tasks: &PathBuf,
-    output: &PathBuf,
-    concurrent: usize,
-    plugin_manager: &mut PluginManager,
+    _tasks: &PathBuf, 
+    _output: &PathBuf, 
+    _concurrent: usize, 
+    _plugin_manager: &mut PluginManager
 ) -> Result<()> {
-    // Implement parallel command handling
     Ok(())
 }
 
 async fn handle_report_command(
-    target: &str,
-    format: &[String],
-    output: &Option<PathBuf>,
-    title: &Option<String>,
-    config: &Config,
+    _target: &str, 
+    _format: &[String], 
+    _output: &Option<PathBuf>, 
+    _title: &Option<String>, 
+    _config: &Config
 ) -> Result<()> {
-    // Implement report command handling
     Ok(())
 }
 
 async fn handle_run_command(
-    plugin: &str,
-    target: &str,
-    options: &Option<String>,
-    plugin_manager: &mut PluginManager,
+    _plugin: &str, 
+    _target: &str, 
+    _options: &Option<String>, 
+    _plugin_manager: &mut PluginManager
 ) -> Result<()> {
-    // Implement run command handling
     Ok(())
 }
 
 fn handle_plugins_command(
-    category: &Option<String>,
-    plugin_manager: &PluginManager,
+    _category: &Option<String>, 
+    _plugin_manager: &PluginManager
 ) -> Result<()> {
-    // Implement plugins command handling
     Ok(())
 }
 
 async fn handle_generate_tasks_command(
-    input: &PathBuf,
-    output: &PathBuf,
-    r#type: &str,
-    plugins: &Option<String>,
-    max_targets: usize,
-    options: &Option<String>,
+    _input: &PathBuf, 
+    _output: &PathBuf, 
+    _type: &str, 
+    _plugins: &Option<String>, 
+    _max_targets: usize, 
+    _options: &Option<String>
 ) -> Result<()> {
-    // Implement generate tasks command handling
     Ok(())
 }
 
-async fn handle_resources_command(resource_manager: &ResourceManager) -> Result<()> {
-    // Implement resources command handling
+async fn handle_resources_command(_resource_manager: &ResourceManager) -> Result<()> {
     Ok(())
 }
 
-async fn handle_init_command(force: bool, config: &mut Config) -> Result<()> {
-    // Implement init command handling
+async fn handle_init_command(_force: bool, _config: &mut Config) -> Result<()> {
     Ok(())
 }
