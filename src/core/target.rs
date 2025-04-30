@@ -2,11 +2,11 @@ use std::collections::{HashSet, HashMap};
 use std::net::IpAddr;
 use std::path::Path;
 use serde::{Serialize, Deserialize};
-use anyhow::{Result, Context};
+use anyhow::Result;
 use ipnetwork::IpNetwork;
 use regex::Regex;
 use chrono::{DateTime, Utc};
-use tracing::{info, debug, warn};
+use tracing::{info, debug};
 
 /// Target definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -218,7 +218,7 @@ impl TargetManager {
         }
         
         // Check if the host matches any of the resolved targets (for subdomains)
-        for target in &resolved {
+        for target in resolved {
             if host.ends_with(target) {
                 return Ok(true);
             }

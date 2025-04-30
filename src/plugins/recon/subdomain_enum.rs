@@ -73,7 +73,7 @@ impl SubdomainEnumPlugin {
             .context(format!("Failed to read output from {}", tool_name))?;
         
         // Parse results
-        let subdomains = content
+        let subdomains : Vec<String> = content
             .lines()
             .map(|line| line.trim().to_string())
             .filter(|line| !line.is_empty())

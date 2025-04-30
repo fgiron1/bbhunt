@@ -1,19 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use std::collections::HashMap;
-use serde_json::Value;
-use uuid::Uuid;
-use tracing::{info, warn, error};
 
 use crate::config::Config;
-use crate::core::plugin::{PluginManager, PluginCategory};
+use crate::core::plugin::PluginManager;
 use crate::core::resource::ResourceManager;
-use crate::core::target::{Target, TargetManager, TargetSpecifier, format_target_specifier};
-use crate::engine::task::{TaskGenerator, TaskGeneratorConfig, TaskType};
-use crate::engine::parallel::ParallelExecutor;
-use crate::reporting::generator::ReportManager;
-use crate::reporting::model::{Report, ReportFormat};
 
 #[derive(Parser)]
 #[command(name = "bbhunt")]
@@ -186,7 +177,8 @@ async fn handle_target_command(subcommand: &TargetSubcommand, config: &mut Confi
         TargetSubcommand::Show { name } => {
             println!("Showing target: {}", name);
             Ok(())
-        }
+        },
+        _ => Ok(())
     }
 }
 async fn handle_parallel_command(

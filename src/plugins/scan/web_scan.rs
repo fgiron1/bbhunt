@@ -391,8 +391,7 @@ impl Plugin for WebScanPlugin {
         let mut result_data = HashMap::new();
         result_data.insert("total_vulnerabilities".to_string(), Value::Number(vulnerabilities.len().into()));
         result_data.insert("severity_counts".to_string(), serde_json::to_value(severity_counts)?);
-        result_data.insert("vulnerabilities".to_string(), serde_json::to_value(vulnerabilities)?);
-        
+        result_data.insert("vulnerabilities".to_string(), serde_json::to_value(&vulnerabilities)?);        
         let execution_time = start_time.elapsed();
         
         info!("Web scan completed in {:?}", execution_time);

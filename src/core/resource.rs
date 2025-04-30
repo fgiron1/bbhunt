@@ -3,10 +3,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Serialize, Deserialize};
-use sysinfo::{System, SystemTrait, CpuTrait as _, ProcessTrait as _};
+use sysinfo::{System, SystemExt, Pid};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
-use rand::random;
+use tracing::{info, debug, warn};
 
 /// Resource requirements for plugins or tasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,70 +93,102 @@ impl ResourceManager {
     /// Check if the system has enough resources to run a task
     pub async fn check_resources(&self, requirements: &ResourceRequirements) -> Result<bool> {
         let mut system = self.system.lock().await;
-        system.refresh_all();
+        system.refresh_memory();
         
         // Memory check
-        let total_memory = system.total_memory() / (1024 * 1024);
-        let available_memory = system.available_memory() / (1024 * 1024);
+        let total_memory = system.total_memory() / 1024 / 1024;
+        let available_memory = system.available_memory() / 1024 / 1024;
         
-        // Remove disk space checks for now
-        
-        debug!(
-            "Resource Check - Memory: {}/{} MB",
-            available_memory, total_memory
-        );
+        if requirements.memory_mb > available_memory as usize {
+            debug!("Not enough memory: {}MB required, {}MB available", 
+                  requirements.memory_mb, available_memory);
+            return Ok(false);
+        }
 
-        Ok(
-            available_memory >= requirements.memory_mb as u64
-        )
+        // CPU check (use global CPU usage)
+        system.refresh_cpu();
+        let cpu_usage = system.global_cpu_info().get_cpu_usage();
+        let available_cpu = self.max_cpu as f32 * (1.0 - cpu_usage);
+        
+        if requirements.cpu_cores > available_cpu {
+            debug!("Not enough CPU: {} cores required, {} available", 
+                  requirements.cpu_cores, available_cpu);
+            return Ok(false);
+        }
+
+        // Implement disk space check carefully
+        system.refresh_disks_list();
+        let free_space = system.disks()
+            .iter()
+            .map(|disk| disk.available_space() / 1024 / 1024)
+            .sum::<u64>();
+        
+        if requirements.disk_mb > free_space as usize {
+            debug!("Not enough disk space: {}MB required, {}MB available", 
+                  requirements.disk_mb, free_space);
+            return Ok(false);
+        }
+
+        Ok(true)
     }
+
     /// Get current resource usage
     pub async fn get_resource_usage(&self) -> Result<ResourceUsage> {
         let mut system = self.system.lock().await;
         system.refresh_all();
 
         // Memory usage
-        let total_memory = (system.total_memory() / 1024 / 1024) as usize;
-        let used_memory = (system.used_memory() / 1024 / 1024) as usize;
-        let available_memory = (system.available_memory() / 1024 / 1024) as usize;
-        let memory_percent = (used_memory as f32 / total_memory as f32) * 100.0;
+        let total_memory = system.total_memory() / 1024 / 1024;
+        let used_memory = system.used_memory() / 1024 / 1024;
+        let available_memory = system.available_memory() / 1024 / 1024;
+        let memory_percent = if total_memory > 0 {
+            (used_memory as f32 / total_memory as f32) * 100.0
+        } else {
+            0.0
+        };
 
         // CPU usage
-        let cpu_cores = system.cpus().len();
-        let per_core_usage: Vec<f32> = system.cpus().iter()
-            .map(|cpu| cpu.cpu_usage())
-            .collect();
-        let total_cpu_usage = system.global_cpu_info().cpu_usage();
+        system.refresh_cpu();
+        let global_cpu_info = system.global_cpu_info();
+        let total_cpu_usage = global_cpu_info.get_cpu_usage();
 
         // Disk usage
-        let total_disk = (system.total_disk_space().unwrap_or(0) / 1024 / 1024) as usize;
-        let free_disk = (system.free_disk_space().unwrap_or(0) / 1024 / 1024) as usize;
-        let used_disk = total_disk.saturating_sub(free_disk);
-        let disk_percent = if total_disk > 0 {
-            (used_disk as f32 / total_disk as f32) * 100.0
+        system.refresh_disks_list();
+        let (total_disk, free_disk) = system.disks()
+            .iter()
+            .fold((0u64, 0u64), |(total, free), disk| {
+                (total + disk.total_space(), free + disk.available_space())
+            });
+        
+        let total_disk_mb = total_disk / 1024 / 1024;
+        let free_disk_mb = free_disk / 1024 / 1024;
+        let used_disk_mb = total_disk_mb - free_disk_mb;
+        let disk_percent = if total_disk_mb > 0 {
+            (used_disk_mb as f32 / total_disk_mb as f32) * 100.0
         } else {
             0.0
         };
 
         // Active processes
-        let active_processes = self.get_active_processes().await;
+        system.refresh_processes();
+        let active_processes = self.get_active_processes(&system).await;
 
         Ok(ResourceUsage {
             memory: MemoryUsage {
-                total: total_memory,
-                available: available_memory,
-                used: used_memory,
+                total: total_memory as usize,
+                available: available_memory as usize,
+                used: used_memory as usize,
                 percent: memory_percent,
             },
             cpu: CpuUsage {
-                cores: cpu_cores,
+                cores: system.physical_core_count().unwrap_or(0),
                 total_usage: total_cpu_usage,
-                per_core_usage,
+                per_core_usage: Vec::new(), // This would require more complex iteration
             },
             disk: DiskUsage {
-                total: total_disk,
-                free: free_disk,
-                used: used_disk,
+                total: total_disk_mb as usize,
+                free: free_disk_mb as usize,
+                used: used_disk_mb as usize,
                 percent: disk_percent,
             },
             active_processes,
@@ -189,23 +220,24 @@ impl ResourceManager {
     }
 
     /// Get active processes
-    pub async fn get_active_processes(&self) -> Vec<ProcessInfo> {
-        let mut system = self.system.lock().await;
-        system.refresh_processes();
-
-        system.processes()
-            .iter()
-            .filter_map(|(pid, process)| {
-                Some(ProcessInfo {
-                    name: process.name().to_string(),
-                    pid: *pid,
-                    memory_usage: process.memory() as usize,
-                    cpu_usage: process.cpu_usage(),
-                    start_time: Instant::now(), // Note: exact start time might need different approach
+    async fn get_active_processes(&self, system: &System) -> Vec<ProcessInfo> {
+        let active_processes = self.active_processes.lock().await;
+        
+        active_processes.iter()
+            .filter_map(|(pid, process_info)| {
+                system.process(*pid as Pid).map(|process| {
+                    ProcessInfo {
+                        name: process.name().to_string(),
+                        pid: *pid,
+                        memory_usage: (process.memory() / 1024 / 1024) as usize,
+                        cpu_usage: 0.0, // CPU usage per process is not straightforward
+                        start_time: process_info.start_time,
+                    }
                 })
             })
             .collect()
     }
+
     /// Run a process with resource limits
     pub async fn run_with_limits<F, R>(&self, 
         name: &str, 
