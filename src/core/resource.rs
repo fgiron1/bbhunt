@@ -3,11 +3,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Serialize, Deserialize};
-use sysinfo::{System, SystemExt, Pid};
+use sysinfo::{Disks, Pid, System};
 use tokio::sync::Mutex;
-use tracing::{info, debug, warn};
+use tracing::debug;
 
-/// Resource requirements for plugins or tasks
+// Resource requirements for plugins or tasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceRequirements {
     pub memory_mb: usize,
@@ -94,7 +94,7 @@ impl ResourceManager {
     pub async fn check_resources(&self, requirements: &ResourceRequirements) -> Result<bool> {
         let mut system = self.system.lock().await;
         system.refresh_memory();
-        
+
         // Memory check
         let total_memory = system.total_memory() / 1024 / 1024;
         let available_memory = system.available_memory() / 1024 / 1024;
@@ -107,7 +107,7 @@ impl ResourceManager {
 
         // CPU check (use global CPU usage)
         system.refresh_cpu();
-        let cpu_usage = system.global_cpu_info().get_cpu_usage();
+        let cpu_usage = system.global_cpu_info().cpu_usage();
         let available_cpu = self.max_cpu as f32 * (1.0 - cpu_usage);
         
         if requirements.cpu_cores > available_cpu {
@@ -116,12 +116,12 @@ impl ResourceManager {
             return Ok(false);
         }
 
-        // Implement disk space check carefully
-        system.refresh_disks_list();
-        let free_space = system.disks()
-            .iter()
-            .map(|disk| disk.available_space() / 1024 / 1024)
-            .sum::<u64>();
+        // Disk space check
+        let (total_disk, free_disk) = system.disks()
+        .iter()
+        .fold((0u64, 0u64), |(total, free), disk| {
+            (total + disk.total_space(), free + disk.available_space())
+        });
         
         if requirements.disk_mb > free_space as usize {
             debug!("Not enough disk space: {}MB required, {}MB available", 
@@ -150,15 +150,10 @@ impl ResourceManager {
         // CPU usage
         system.refresh_cpu();
         let global_cpu_info = system.global_cpu_info();
-        let total_cpu_usage = global_cpu_info.get_cpu_usage();
+        let total_cpu_usage = global_cpu_info.cpu_usage();
 
         // Disk usage
-        system.refresh_disks_list();
-        let (total_disk, free_disk) = system.disks()
-            .iter()
-            .fold((0u64, 0u64), |(total, free), disk| {
-                (total + disk.total_space(), free + disk.available_space())
-            });
+        self.get_disk_usage();
         
         let total_disk_mb = total_disk / 1024 / 1024;
         let free_disk_mb = free_disk / 1024 / 1024;
@@ -225,7 +220,7 @@ impl ResourceManager {
         
         active_processes.iter()
             .filter_map(|(pid, process_info)| {
-                system.process(*pid as Pid).map(|process| {
+                system.process(*pid).map(|process| {
                     ProcessInfo {
                         name: process.name().to_string(),
                         pid: *pid,
@@ -265,5 +260,14 @@ impl ResourceManager {
         self.untrack_process(pid).await?;
         
         Ok(result)
+    }
+
+    pub fn get_disk_usage() {
+        let disks = Disks::new_with_refreshed_list();
+        for disk in disks.list() {
+            let total_space = disk.total_space();
+            let available_space = disk.available_space();
+            println!("Disk: {:?}, Total: {} bytes, Available: {} bytes", disk.name(), total_space, available_space);
+        }
     }
 }
