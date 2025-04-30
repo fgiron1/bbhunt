@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bbhunt::core::cli::BBHuntCli;
+use core::cli::BBHuntCli;
 use tracing_subscriber;
 
 #[tokio::main]

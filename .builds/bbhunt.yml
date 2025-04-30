@@ -1,0 +1,41 @@
+# .builds/bbhunt.yml
+image: alpine/edge
+packages:
+  - rust
+  - cargo
+  - openssl-dev
+  - pkgconfig
+  - git
+sources:
+  - https://git.sr.ht/~yourusername/bbhunt
+tasks:
+  - setup: |
+      cd bbhunt
+      cargo build --release
+  - recon: |
+      cd bbhunt
+      ./target/release/bbhunt parallel \
+        --tasks ./tasks/recon-tasks.json \
+        --output ./results/recon-results.json \
+        --concurrent 4
+  - generate-scan-tasks: |
+      cd bbhunt
+      ./target/release/bbhunt generate-tasks \
+        --input ./results/recon-results.json \
+        --output ./tasks/scan-tasks.json \
+        --type scan
+  - scan: |
+      cd bbhunt
+      ./target/release/bbhunt parallel \
+        --tasks ./tasks/scan-tasks.json \
+        --output ./results/scan-results.json \
+        --concurrent 2
+  - report: |
+      cd bbhunt
+      ./target/release/bbhunt report \
+        --target default-target \
+        --format json md html \
+        --output ./reports \
+        --title "Security Scan Report"
+artifacts:
+  - bbhunt/reports/**

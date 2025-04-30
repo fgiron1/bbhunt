@@ -1,0 +1,279 @@
+# .github/workflows/bbhunt.yml
+name: BBHunt Security Scan
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday
+  workflow_dispatch:     # Manual trigger
+    inputs:
+      target:
+        description: 'Target to scan'
+        required: true
+        default: 'default-target'
+      concurrency:
+        description: 'Maximum concurrent tasks'
+        required: false
+        default: '4'
+      scan_mode:
+        description: 'Scan mode (basic, standard, thorough)'
+        required: false
+        default: 'standard'
+        type: choice
+        options:
+          - basic
+          - standard
+          - thorough
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      
+      - name: Build BBHunt
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release
+      
+      - name: Upload binary
+        uses: actions/upload-artifact@v3
+        with:
+          name: bbhunt-binary
+          path: target/release/bbhunt
+
+  recon:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download BBHunt binary
+        uses: actions/download-artifact@v3
+        with:
+          name: bbhunt-binary
+          path: ./bin
+      
+      - name: Make binary executable
+        run: chmod +x ./bin/bbhunt
+      
+      - name: Create directories
+        run: |
+          mkdir -p ./tasks
+          mkdir -p ./results
+          mkdir -p ./config/plugins
+      
+      - name: Setup target
+        run: |
+          ./bin/bbhunt target add ${{ github.event.inputs.target || 'default-target' }} --domain ${{ github.event.inputs.target || 'default-target' }}
+      
+      - name: Create recon tasks
+        run: |
+          cat > ./tasks/recon-tasks.json << EOF
+          [
+            {
+              "id": "subdomain-enum-${{ github.event.inputs.target || 'default-target' }}",
+              "plugin": "subdomain_enum",
+              "target": "${{ github.event.inputs.target || 'default-target' }}",
+              "options": {
+                "passive_only": false
+              },
+              "dependencies": []
+            }
+          ]
+          EOF
+      
+      - name: Run Reconnaissance
+        run: |
+          ./bin/bbhunt parallel \
+            --tasks ./tasks/recon-tasks.json \
+            --output ./results/recon-results.json \
+            --concurrent ${{ github.event.inputs.concurrency || '4' }}
+      
+      - name: Upload Recon Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: recon-results
+          path: ./results/recon-results.json
+
+  scan:
+    needs: recon
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download BBHunt binary
+        uses: actions/download-artifact@v3
+        with:
+          name: bbhunt-binary
+          path: ./bin
+      
+      - name: Make binary executable
+        run: chmod +x ./bin/bbhunt
+      
+      - name: Create directories
+        run: |
+          mkdir -p ./tasks
+          mkdir -p ./results
+          mkdir -p ./config/plugins
+      
+      - name: Download Recon Results
+        uses: actions/download-artifact@v3
+        with:
+          name: recon-results
+          path: ./results
+      
+      - name: Generate Scan Tasks
+        run: |
+          ./bin/bbhunt generate-tasks \
+            --input ./results/recon-results.json \
+            --output ./tasks/scan-tasks.json \
+            --type scan \
+            --plugins "web_scan" \
+            --options "{\"mode\": \"${{ github.event.inputs.scan_mode || 'standard' }}\"}"
+      
+      - name: Run Scans
+        run: |
+          ./bin/bbhunt parallel \
+            --tasks ./tasks/scan-tasks.json \
+            --output ./results/scan-results.json \
+            --concurrent ${{ github.event.inputs.concurrency || '4' }}
+      
+      - name: Upload Scan Results
+        uses: actions/upload-artifact@v3
+        with:
+          name: scan-results
+          path: ./results/scan-results.json
+
+  report:
+    needs: scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download BBHunt binary
+        uses: actions/download-artifact@v3
+        with:
+          name: bbhunt-binary
+          path: ./bin
+      
+      - name: Make binary executable
+        run: chmod +x ./bin/bbhunt
+      
+      - name: Create directories
+        run: |
+          mkdir -p ./reports
+          mkdir -p ./results
+      
+      - name: Download Scan Results
+        uses: actions/download-artifact@v3
+        with:
+          name: scan-results
+          path: ./results
+      
+      - name: Download Recon Results
+        uses: actions/download-artifact@v3
+        with:
+          name: recon-results
+          path: ./results
+      
+      - name: Generate Reports
+        run: |
+          ./bin/bbhunt report \
+            --target ${{ github.event.inputs.target || 'default-target' }} \
+            --format json md html \
+            --output ./reports \
+            --title "Security Scan Report for ${{ github.event.inputs.target || 'default-target' }}"
+      
+      - name: Upload Reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-reports
+          path: ./reports
+      
+      - name: Generate Summary
+        run: |
+          echo "# Security Scan Summary" > $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Target: ${{ github.event.inputs.target || 'default-target' }}" >> $GITHUB_STEP_SUMMARY
+          echo "Scan mode: ${{ github.event.inputs.scan_mode || 'standard' }}" >> $GITHUB_STEP_SUMMARY
+          echo "Completed: $(date)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "./reports/summary.json" ]; then
+            echo "## Findings" >> $GITHUB_STEP_SUMMARY
+            critical=$(jq '.severity_counts.critical // 0' ./reports/summary.json)
+            high=$(jq '.severity_counts.high // 0' ./reports/summary.json)
+            medium=$(jq '.severity_counts.medium // 0' ./reports/summary.json)
+            low=$(jq '.severity_counts.low // 0' ./reports/summary.json)
+            info=$(jq '.severity_counts.info // 0' ./reports/summary.json)
+            
+            echo "- Critical: $critical" >> $GITHUB_STEP_SUMMARY
+            echo "- High: $high" >> $GITHUB_STEP_SUMMARY
+            echo "- Medium: $medium" >> $GITHUB_STEP_SUMMARY
+            echo "- Low: $low" >> $GITHUB_STEP_SUMMARY
+            echo "- Info: $info" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No summary data available." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  notify:
+    needs: report
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Reports
+        uses: actions/download-artifact@v3
+        with:
+          name: security-reports
+          path: ./reports
+      
+      - name: Determine Status
+        id: status
+        run: |
+          if [ -f "./reports/summary.json" ]; then
+            critical=$(jq '.severity_counts.critical // 0' ./reports/summary.json)
+            high=$(jq '.severity_counts.high // 0' ./reports/summary.json)
+            
+            if [ "$critical" -gt 0 ] || [ "$high" -gt 0 ]; then
+              echo "status=critical" >> $GITHUB_OUTPUT
+            else
+              echo "status=normal" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "status=unknown" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Send Critical Notification
+        if: steps.status.outputs.status == 'critical'
+        # This is where you'd integrate with your notification system
+        # Below is a placeholder that sends to a webhook
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+            -d '{"text":"⚠️ SECURITY ALERT: Critical vulnerabilities found in ${{ github.event.inputs.target || 'default-target' }}. Please check the security reports."}' \
+            ${{ secrets.NOTIFICATION_WEBHOOK_URL || 'https://example.com/webhook' }}
+      
+      - name: Send Normal Notification
+        if: steps.status.outputs.status == 'normal'
+        # This is a placeholder for normal status notifications
+        run: |
+          curl -X POST -H "Content-Type: application/json" \
+            -d '{"text":"✅ Security scan completed for ${{ github.event.inputs.target || 'default-target' }}. No critical issues found."}' \
+            ${{ secrets.NOTIFICATION_WEBHOOK_URL || 'https://example.com/webhook' }}
