@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use anyhow::{Result, Context};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
-use tracing::{info, warn, error};
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PluginCategory {

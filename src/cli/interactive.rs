@@ -1,6 +1,5 @@
 use anyhow::Result;
-use dialoguer::{theme::ColorfulTheme, Input, Confirm};
-use tracing::info;
+use dialoguer::{theme::ColorfulTheme, Input};
 
 use crate::config::Config;
 use crate::core::plugin::PluginManager;

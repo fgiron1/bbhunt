@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use serde::{Serialize, Deserialize};
-use tokio::sync::mpsc;
-use tracing::{info, debug, warn, error};
+use tracing::{info, debug, warn};
 
 use super::task::{TaskDefinition, TaskResult, TaskStatus};
 use super::parallel::ParallelExecutor;

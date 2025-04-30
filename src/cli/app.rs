@@ -1,13 +1,12 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::path::PathBuf;
 use tracing::info;
 
 use crate::config::Config;
 use crate::core::plugin::PluginManager;
 use crate::core::resource::ResourceManager;
 
-use super::commands::{self, Args, Commands};
+use super::commands::{self, Args};
 use super::interactive::InteractiveShell;
 
 /// The main application struct

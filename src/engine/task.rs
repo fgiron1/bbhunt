@@ -3,7 +3,7 @@ use anyhow::Result;
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use tracing::{info, debug, warn, error};
+use tracing::{info, debug};
 
 /// Task definition for execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
