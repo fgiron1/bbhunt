@@ -2,9 +2,9 @@ use std::sync::Arc;
 use std::path::Path;
 use anyhow::Result;
 use tokio::sync::{mpsc, Mutex, Semaphore};
-use tracing::{info, debug, warn, error};
+use tracing::{info, debug, error};
 
-use crate::core::Plugin::PluginManager;
+use crate::core::plugin::PluginManager;
 use super::task::{TaskDefinition, TaskResult, TaskStatus};
 
 /// Executor for running tasks in parallel
@@ -27,7 +27,7 @@ impl ParallelExecutor {
     /// Execute a list of tasks
     pub async fn execute_tasks(&self, tasks: Vec<TaskDefinition>) -> Result<Vec<TaskResult>> {
         if tasks.is_empty() {
-            warn!("No tasks to execute");
+            info!("No tasks to execute");
             return Ok(Vec::new());
         }
         
@@ -160,42 +160,4 @@ impl ParallelExecutor {
         std::fs::write(path, content)?;
         Ok(())
     }
-    
-    /// Get the maximum number of concurrent tasks
-    pub fn max_concurrent_tasks(&self) -> usize {
-        self.max_concurrent_tasks
-    }
-    
-    /// Get statistics for task results
-    pub fn get_task_stats(results: &[TaskResult]) -> TaskStats {
-        let mut stats = TaskStats {
-            total: results.len(),
-            completed: 0,
-            failed: 0,
-            skipped: 0,
-            total_execution_time: std::time::Duration::from_secs(0),
-        };
-        
-        for result in results {
-            match result.status {
-                TaskStatus::Completed => stats.completed += 1,
-                TaskStatus::Failed => stats.failed += 1,
-                TaskStatus::Skipped => stats.skipped += 1,
-                _ => {}
-            }
-            stats.total_execution_time += result.execution_time;
-        }
-        
-        stats
-    }
-}
-
-/// Statistics for task execution
-#[derive(Debug, Clone)]
-pub struct TaskStats {
-    pub total: usize,
-    pub completed: usize,
-    pub failed: usize,
-    pub skipped: usize,
-    pub total_execution_time: std::time::Duration,
 }

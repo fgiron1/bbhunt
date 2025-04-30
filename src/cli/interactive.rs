@@ -69,13 +69,15 @@ impl<'a> InteractiveShell<'a> {
         println!("  exit                Exit the interactive shell");
     }
     
-    async fn handle_run_command(&mut self, args: &str) -> Result<()> {
-        // Implement run command
+    async fn handle_run_command(&mut self, _args: &str) -> Result<()> {
+        // Placeholder implementation
+        println!("Running command");
         Ok(())
     }
     
-    async fn handle_target_command(&mut self, args: &str) -> Result<()> {
-        // Implement target command
+    async fn handle_target_command(&mut self, _args: &str) -> Result<()> {
+        // Placeholder implementation
+        println!("Handling target");
         Ok(())
     }
     

@@ -14,7 +14,7 @@ pub enum PluginCategory {
     Utility,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PluginMetadata {
     pub name: String,
     pub description: String,
@@ -24,7 +24,7 @@ pub struct PluginMetadata {
     pub required_tools: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginResult {
     pub status: PluginStatus,
     pub message: String,
@@ -32,7 +32,7 @@ pub struct PluginResult {
     pub execution_time: std::time::Duration,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PluginStatus {
     Success,
     Error,

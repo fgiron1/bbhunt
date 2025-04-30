@@ -6,7 +6,7 @@ use serde::{Serialize, Deserialize};
 use super::model::Report;
 
 /// Report format enum
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ReportFormat {
     JSON,
     HTML,

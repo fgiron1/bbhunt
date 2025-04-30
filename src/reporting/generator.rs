@@ -21,16 +21,25 @@ impl ReportManager {
         let mut generators = HashMap::new();
         
         // Register default generators
-        generators.insert(ReportFormat::JSON, Box::new(JsonReportGenerator::new()) as Box<dyn ReportGenerator + Send + Sync>);
-        generators.insert(ReportFormat::Markdown, Box::new(MarkdownReportGenerator::new()) as Box<dyn ReportGenerator + Send + Sync>);
-        generators.insert(ReportFormat::HTML, Box::new(HtmlReportGenerator::new()) as Box<dyn ReportGenerator + Send + Sync>);
+        generators.insert(
+            ReportFormat::JSON, 
+            Box::new(JsonReportGenerator::new()) as Box<dyn ReportGenerator + Send + Sync>
+        );
+        generators.insert(
+            ReportFormat::Markdown, 
+            Box::new(MarkdownReportGenerator::new()) as Box<dyn ReportGenerator + Send + Sync>
+        );
+        generators.insert(
+            ReportFormat::HTML, 
+            Box::new(HtmlReportGenerator::new()) as Box<dyn ReportGenerator + Send + Sync>
+        );
         
         Self {
             generators,
             report_dir,
         }
     }
-    
+
     /// Register a new report generator
     pub fn register_generator(&mut self, generator: Box<dyn ReportGenerator + Send + Sync>) {
         let format = generator.supported_format();

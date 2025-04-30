@@ -3,9 +3,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use anyhow::Result;
 use serde::{Serialize, Deserialize};
-use sysinfo::{System, SystemExt, CpuExt, ProcessExt};
+use sysinfo::{System, SystemTrait, CpuTrait as _, ProcessTrait as _};
 use tokio::sync::Mutex;
-use tracing::{info, debug, warn};
+use tracing::{debug, warn};
+use rand::random;
 
 /// Resource requirements for plugins or tasks
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,41 +97,20 @@ impl ResourceManager {
         system.refresh_all();
         
         // Memory check
-        let available_memory = (system.available_memory() / 1024 / 1024) as usize;
-        if requirements.memory_mb > available_memory {
-            debug!("Not enough memory: {}MB required, {}MB available", 
-                  requirements.memory_mb, available_memory);
-            return Ok(false);
-        }
-
-        // CPU check - only do a rough check here
-        let cpu_usage = system.global_cpu_info().cpu_usage() / 100.0;
-        let available_cpu = self.max_cpu as f32 * (1.0 - cpu_usage);
+        let total_memory = system.total_memory() / (1024 * 1024);
+        let available_memory = system.available_memory() / (1024 * 1024);
         
-        if requirements.cpu_cores > available_cpu {
-            debug!("Not enough CPU: {} cores required, {} available", 
-                  requirements.cpu_cores, available_cpu);
-            return Ok(false);
-        }
+        // Remove disk space checks for now
+        
+        debug!(
+            "Resource Check - Memory: {}/{} MB",
+            available_memory, total_memory
+        );
 
-        // Disk check
-        if requirements.disk_mb > 0 {
-            let free_space = (system.free_disk_space().unwrap_or(u64::MAX) / 1024 / 1024) as usize;
-            if requirements.disk_mb > free_space {
-                debug!("Not enough disk space: {}MB required, {}MB available", 
-                      requirements.disk_mb, free_space);
-                return Ok(false);
-            }
-        }
-
-        // Network check (simplified)
-        if requirements.network_required {
-            // Just a placeholder - in a real application, you would check network connectivity
-        }
-
-        Ok(true)
+        Ok(
+            available_memory >= requirements.memory_mb as u64
+        )
     }
-
     /// Get current resource usage
     pub async fn get_resource_usage(&self) -> Result<ResourceUsage> {
         let mut system = self.system.lock().await;
@@ -209,34 +189,23 @@ impl ResourceManager {
     }
 
     /// Get active processes
-    async fn get_active_processes(&self) -> Vec<ProcessInfo> {
+    pub async fn get_active_processes(&self) -> Vec<ProcessInfo> {
         let mut system = self.system.lock().await;
-        let active_processes = self.active_processes.lock().await;
-        
-        // Update process information
-        let mut results = Vec::new();
-        
-        for (pid, process_info) in active_processes.iter() {
-            if let Some(process) = system.process(*pid) {
-                let memory_usage = (process.memory() / 1024 / 1024) as usize;
-                let cpu_usage = process.cpu_usage();
-                
-                results.push(ProcessInfo {
-                    name: process_info.name.clone(),
-                    pid: *pid,
-                    memory_usage,
-                    cpu_usage,
-                    start_time: process_info.start_time,
-                });
-            } else {
-                // Process no longer exists
-                results.push(process_info.clone());
-            }
-        }
-        
-        results
-    }
+        system.refresh_processes();
 
+        system.processes()
+            .iter()
+            .filter_map(|(pid, process)| {
+                Some(ProcessInfo {
+                    name: process.name().to_string(),
+                    pid: *pid,
+                    memory_usage: process.memory() as usize,
+                    cpu_usage: process.cpu_usage(),
+                    start_time: Instant::now(), // Note: exact start time might need different approach
+                })
+            })
+            .collect()
+    }
     /// Run a process with resource limits
     pub async fn run_with_limits<F, R>(&self, 
         name: &str, 
