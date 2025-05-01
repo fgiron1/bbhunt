@@ -16,7 +16,4 @@ pub use target::{
     TargetSpecifier, 
     format_target_specifier
 };
-pub use resource::{
-    ResourceCollector, 
-    ResourceInfo,
-};
+pub use resource::ResourceManager;

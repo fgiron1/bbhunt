@@ -208,7 +208,7 @@ impl TargetManager {
     }
     
     /// Check if a host is in scope for a target
-    pub async fn is_in_scope(&self, target_name: &str, host: &str) -> Result<bool> {
+    pub async fn is_in_scope(&mut self, target_name: &str, host: &str) -> Result<bool> {
         // We need to clone self since resolve_target borrows mutably
         let resolved = self.resolve_target(target_name).await?;
         
@@ -219,7 +219,7 @@ impl TargetManager {
         
         // Check if the host matches any of the resolved targets (for subdomains)
         for target in resolved {
-            if host.ends_with(target) {
+            if host.ends_with(&target) {
                 return Ok(true);
             }
         }

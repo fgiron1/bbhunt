@@ -8,6 +8,6 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     // Create and run the application
-    let app = App::new()?;
+    let mut app = App::new()?;
     app.run().await
 }

@@ -13,7 +13,7 @@ pub use core::{
     Plugin, 
     PluginManager, 
     Target, 
-    TargetManager, 
+    TargetManager,
     ResourceManager
 };
 pub use engine::Workflow;

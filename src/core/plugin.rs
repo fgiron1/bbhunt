@@ -1,3 +1,4 @@
+// src/core/plugin.rs
 use std::collections::HashMap;
 use std::path::Path;
 use async_trait::async_trait;
@@ -24,6 +25,19 @@ pub struct PluginMetadata {
     pub required_tools: Vec<String>,
 }
 
+impl Default for PluginMetadata {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            description: String::new(),
+            version: String::new(),
+            category: PluginCategory::Utility,
+            author: String::new(),
+            required_tools: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginResult {
     pub status: PluginStatus,
@@ -37,16 +51,6 @@ pub enum PluginStatus {
     Success,
     Error,
     Partial,
-}
-
-/// Resource requirement for a plugin
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginRequirements {
-    pub memory_mb: usize,
-    pub cpu_cores: f32,
-    pub disk_mb: Option<usize>,
-    pub network_required: bool,
-    pub external_tools: Vec<String>,
 }
 
 /// Plugin trait that all plugins must implement
@@ -147,7 +151,7 @@ impl PluginManager {
         options: Option<HashMap<String, Value>>
     ) -> Result<PluginResult> {
         let plugin = self.plugins.get_mut(plugin_name)
-            .context(format!("Plugin '{}' not found", plugin_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Plugin '{}' not found", plugin_name))?;
         
         info!("Running plugin '{}' on target '{}'", plugin_name, target);
         
@@ -185,4 +189,69 @@ impl PluginManager {
             .map(|plugin| plugin.metadata())
             .collect()
     }
+}
+
+// Minimal implementation of a subdomain enumeration plugin
+#[derive(Default)]
+pub struct SimpleSubdomainEnumPlugin {
+    metadata: PluginMetadata,
+}
+
+impl SimpleSubdomainEnumPlugin {
+    pub fn new() -> Self {
+        Self {
+            metadata: PluginMetadata {
+                name: "subdomain_enum".to_string(),
+                description: "Simple subdomain enumeration".to_string(),
+                version: "0.1.0".to_string(),
+                category: PluginCategory::Recon,
+                author: "BBHunt Team".to_string(),
+                required_tools: vec![],
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl Plugin for SimpleSubdomainEnumPlugin {
+    fn metadata(&self) -> &PluginMetadata {
+        &self.metadata
+    }
+    
+    async fn setup(&mut self) -> Result<()> {
+        Ok(())
+    }
+    
+    async fn execute(
+        &mut self, 
+        target: &str, 
+        _options: Option<HashMap<String, Value>>
+    ) -> Result<PluginResult> {
+        // Simulated results
+        let mut data = HashMap::new();
+        data.insert(
+            "subdomains".to_string(), 
+            Value::Array(vec![
+                Value::String(format!("www.{}", target)),
+                Value::String(format!("api.{}", target)),
+                Value::String(format!("blog.{}", target)),
+            ])
+        );
+        
+        Ok(PluginResult {
+            status: PluginStatus::Success,
+            message: format!("Found 3 subdomains for {}", target),
+            data,
+            execution_time: std::time::Duration::from_millis(100),
+        })
+    }
+    
+    async fn cleanup(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+// Provide a simple function to create the plugin
+pub fn create_simple_subdomain_enum() -> Box<dyn Plugin> {
+    Box::new(SimpleSubdomainEnumPlugin::new())
 }

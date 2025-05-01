@@ -163,9 +163,9 @@ pub async fn execute_command(
 }
 
 // Placeholder for handler functions that would be implemented similarly to previous discussions
-async fn handle_target_command(subcommand: &TargetSubcommand, config: &mut Config) -> Result<()> {
+async fn handle_target_command(subcommand: &TargetSubcommand, _config: &mut Config) -> Result<()> {
     match subcommand {
-        TargetSubcommand::Add { name, domain, ip, cidr } => {
+        TargetSubcommand::Add { name, domain: _domain, ip: _ip, cidr: _cidr } => {
             // Basic implementation, adjust as needed
             println!("Adding target: {}", name);
             Ok(())
@@ -178,9 +178,9 @@ async fn handle_target_command(subcommand: &TargetSubcommand, config: &mut Confi
             println!("Showing target: {}", name);
             Ok(())
         },
-        _ => Ok(())
     }
 }
+
 async fn handle_parallel_command(
     _tasks: &PathBuf, 
     _output: &PathBuf, 

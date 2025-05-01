@@ -1,3 +1,4 @@
+// src/core/resource.rs
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -63,7 +64,7 @@ pub struct DiskUsage {
 
 /// Manager for system resources
 pub struct ResourceManager {
-    system: Arc<Mutex<System>>,
+    system: Arc<Mutex<System>>, // Fixed typo: 's' -> System
     max_memory: usize,
     max_cpu: usize,
     active_processes: Arc<Mutex<HashMap<u32, ProcessInfo>>>,
@@ -96,7 +97,6 @@ impl ResourceManager {
         system.refresh_memory();
 
         // Memory check
-        let total_memory = system.total_memory() / 1024 / 1024;
         let available_memory = system.available_memory() / 1024 / 1024;
         
         if requirements.memory_mb > available_memory as usize {
@@ -108,7 +108,7 @@ impl ResourceManager {
         // CPU check (use global CPU usage)
         system.refresh_cpu();
         let cpu_usage = system.global_cpu_info().cpu_usage();
-        let available_cpu = self.max_cpu as f32 * (1.0 - cpu_usage);
+        let available_cpu = self.max_cpu as f32 * (1.0 - cpu_usage / 100.0);
         
         if requirements.cpu_cores > available_cpu {
             debug!("Not enough CPU: {} cores required, {} available", 
@@ -117,19 +117,26 @@ impl ResourceManager {
         }
 
         // Disk space check
-        let (total_disk, free_disk) = system.disks()
-        .iter()
-        .fold((0u64, 0u64), |(total, free), disk| {
-            (total + disk.total_space(), free + disk.available_space())
-        });
+        let free_disk_mb = self.calculate_free_disk_space();
         
-        if requirements.disk_mb > free_space as usize {
+        if requirements.disk_mb > free_disk_mb {
             debug!("Not enough disk space: {}MB required, {}MB available", 
-                  requirements.disk_mb, free_space);
+                  requirements.disk_mb, free_disk_mb);
             return Ok(false);
         }
 
         Ok(true)
+    }
+
+    /// Calculate free disk space in MB
+    fn calculate_free_disk_space(&self) -> usize {
+        let disks = Disks::new_with_refreshed_list();
+        let free_space = disks.list()
+            .iter()
+            .map(|disk| disk.available_space() / (1024 * 1024))
+            .sum::<u64>() as usize;
+        
+        free_space
     }
 
     /// Get current resource usage
@@ -138,11 +145,11 @@ impl ResourceManager {
         system.refresh_all();
 
         // Memory usage
-        let total_memory = system.total_memory() / 1024 / 1024;
-        let used_memory = system.used_memory() / 1024 / 1024;
-        let available_memory = system.available_memory() / 1024 / 1024;
-        let memory_percent = if total_memory > 0 {
-            (used_memory as f32 / total_memory as f32) * 100.0
+        let total_memory_mb = system.total_memory() / 1024 / 1024;
+        let used_memory_mb = system.used_memory() / 1024 / 1024;
+        let available_memory_mb = system.available_memory() / 1024 / 1024;
+        let memory_percent = if total_memory_mb > 0 {
+            (used_memory_mb as f32 / total_memory_mb as f32) * 100.0
         } else {
             0.0
         };
@@ -153,26 +160,16 @@ impl ResourceManager {
         let total_cpu_usage = global_cpu_info.cpu_usage();
 
         // Disk usage
-        self.get_disk_usage();
+        let disk_info = self.get_disk_usage_info();
         
-        let total_disk_mb = total_disk / 1024 / 1024;
-        let free_disk_mb = free_disk / 1024 / 1024;
-        let used_disk_mb = total_disk_mb - free_disk_mb;
-        let disk_percent = if total_disk_mb > 0 {
-            (used_disk_mb as f32 / total_disk_mb as f32) * 100.0
-        } else {
-            0.0
-        };
-
         // Active processes
-        system.refresh_processes();
         let active_processes = self.get_active_processes(&system).await;
 
         Ok(ResourceUsage {
             memory: MemoryUsage {
-                total: total_memory as usize,
-                available: available_memory as usize,
-                used: used_memory as usize,
+                total: total_memory_mb as usize,
+                available: available_memory_mb as usize,
+                used: used_memory_mb as usize,
                 percent: memory_percent,
             },
             cpu: CpuUsage {
@@ -180,14 +177,34 @@ impl ResourceManager {
                 total_usage: total_cpu_usage,
                 per_core_usage: Vec::new(), // This would require more complex iteration
             },
-            disk: DiskUsage {
-                total: total_disk_mb as usize,
-                free: free_disk_mb as usize,
-                used: used_disk_mb as usize,
-                percent: disk_percent,
-            },
+            disk: disk_info,
             active_processes,
         })
+    }
+
+    /// Get disk usage information
+    fn get_disk_usage_info(&self) -> DiskUsage {
+        let disks = Disks::new_with_refreshed_list();
+        
+        let total_disk: u64 = disks.list().iter().map(|disk| disk.total_space()).sum();
+        let free_disk: u64 = disks.list().iter().map(|disk| disk.available_space()).sum();
+        
+        let total_disk_mb = total_disk / (1024 * 1024);
+        let free_disk_mb = free_disk / (1024 * 1024);
+        let used_disk_mb = total_disk_mb.saturating_sub(free_disk_mb);
+        
+        let disk_percent = if total_disk_mb > 0 {
+            (used_disk_mb as f32 / total_disk_mb as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        DiskUsage {
+            total: total_disk_mb as usize,
+            free: free_disk_mb as usize,
+            used: used_disk_mb as usize,
+            percent: disk_percent,
+        }
     }
 
     /// Track a new process
@@ -220,12 +237,15 @@ impl ResourceManager {
         
         active_processes.iter()
             .filter_map(|(pid, process_info)| {
-                system.process(*pid).map(|process| {
+                // Convert u32 to sysinfo::Pid
+                let pid_sysinfo = Pid::from_u32(*pid);
+                
+                system.process(pid_sysinfo).map(|process| {
                     ProcessInfo {
                         name: process.name().to_string(),
                         pid: *pid,
                         memory_usage: (process.memory() / 1024 / 1024) as usize,
-                        cpu_usage: 0.0, // CPU usage per process is not straightforward
+                        cpu_usage: process.cpu_usage(),
                         start_time: process_info.start_time,
                     }
                 })
@@ -262,12 +282,20 @@ impl ResourceManager {
         Ok(result)
     }
 
-    pub fn get_disk_usage() {
+    /// Get disk usage information for reporting
+    pub fn get_disk_usage() -> HashMap<String, (u64, u64)> {
         let disks = Disks::new_with_refreshed_list();
+        let mut result = HashMap::new();
+        
         for disk in disks.list() {
             let total_space = disk.total_space();
             let available_space = disk.available_space();
-            println!("Disk: {:?}, Total: {} bytes, Available: {} bytes", disk.name(), total_space, available_space);
+            result.insert(
+                disk.name().to_string_lossy().to_string(),
+                (total_space, available_space)
+            );
         }
+        
+        result
     }
 }
