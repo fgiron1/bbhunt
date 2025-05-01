@@ -1,76 +1,90 @@
-// src/osint/collector.rs
-use std::collections::HashMap;
+// src/osint.rs
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use anyhow::{Result, Context, bail};
 use async_trait::async_trait;
-use tracing::{info, warn, debug};
-use reqwest::Client;
+use tracing::{info, debug, warn};
+use tokio::sync::Mutex;
+use serde::{Serialize, Deserialize};
+use chrono::{DateTime, Utc};
+use once_cell::sync::OnceCell;
 
-use crate::core::target::model::{TargetData, OsintData};
-use crate::error::{BBHuntResult, BBHuntError};
-use crate::context::Context;
-use super::sources::OsintSource;
+use crate::config::AppConfig;
+use crate::target::TargetData;
 
-/// OSINT data collector
+/// OSINT collector with lazy loading of sources
 pub struct OsintCollector {
-    sources: HashMap<String, Box<dyn OsintSource>>,
-    config: HashMap<String, HashMap<String, String>>, // source -> config
-    context: Option<Arc<Context>>,
+    config: AppConfig,
+    sources: Arc<Mutex<HashMap<String, Box<dyn OsintSource>>>>,
+    initialized: AtomicBool,
 }
 
 impl OsintCollector {
     /// Create a new OSINT collector
-    pub fn new() -> Self {
+    pub fn new(config: AppConfig) -> Self {
         Self {
-            sources: HashMap::new(),
-            config: HashMap::new(),
-            context: None,
+            config,
+            sources: Arc::new(Mutex::new(HashMap::new())),
+            initialized: AtomicBool::new(false),
         }
     }
     
-    /// Create a new OSINT collector with context
-    pub fn new_with_context(context: Arc<Context>) -> Self {
-        Self {
-            sources: HashMap::new(),
-            config: HashMap::new(),
-            context: Some(context),
-        }
-    }
-    
-    /// Set the context
-    pub fn set_context(&mut self, context: Arc<Context>) {
-        self.context = Some(context);
-    }
-    
-    /// Register an OSINT source
-    pub fn register_source(&mut self, source: Box<dyn OsintSource>) -> BBHuntResult<()> {
-        let source_name = source.name().to_string();
-        debug!("Registering OSINT source: {}", source_name);
-        self.sources.insert(source_name, source);
-        Ok(())
-    }
-    
-    /// Configure an OSINT source
-    pub fn configure_source(&mut self, source_name: &str, config: HashMap<String, String>) -> BBHuntResult<()> {
-        if !self.sources.contains_key(source_name) {
-            return Err(BBHuntError::InvalidInput(format!("OSINT source not found: {}", source_name)));
+    /// Initialize the OSINT collector
+    pub async fn initialize(&self) -> Result<()> {
+        // Only initialize once
+        if self.initialized.load(Ordering::SeqCst) {
+            return Ok(());
         }
         
-        self.config.insert(source_name.to_string(), config);
+        // Register built-in sources
+        let mut sources = self.sources.lock().await;
+        
+        // DNS OSINT source
+        sources.insert(
+            "dns".to_string(), 
+            Box::new(DnsOsintSource::new(self.config.clone()))
+        );
+        
+        // WHOIS OSINT source
+        sources.insert(
+            "whois".to_string(), 
+            Box::new(WhoisOsintSource::new(self.config.clone()))
+        );
+        
+        // SSL Certificate OSINT source
+        sources.insert(
+            "ssl_certificate".to_string(), 
+            Box::new(SslCertificateOsintSource::new(self.config.clone()))
+        );
+        
+        // Certificate Transparency Log OSINT source
+        sources.insert(
+            "ct_logs".to_string(), 
+            Box::new(CtLogOsintSource::new(self.config.clone()))
+        );
+        
+        // Mark as initialized
+        self.initialized.store(true, Ordering::SeqCst);
+        
+        info!("OSINT collector initialized with {} sources", sources.len());
         Ok(())
     }
     
     /// Run all OSINT collection on a target
-    pub async fn collect_all(&self, target: &mut TargetData) -> BBHuntResult<()> {
+    pub async fn collect_all(&self, target: &mut TargetData) -> Result<()> {
+        // Ensure initialization
+        self.ensure_initialized().await?;
+        
         info!("Running OSINT collection for target: {}", target.name);
         
-        let mut osint_data = OsintData::default();
+        let mut osint_data = target.osint_data.clone();
+        let sources = self.sources.lock().await;
         
-        for (name, source) in &self.sources {
+        for (name, source) in sources.iter() {
             debug!("Running OSINT source: {}", name);
             
-            let config = self.config.get(name).cloned().unwrap_or_default();
-            
-            match source.collect(target, &config).await {
+            match source.collect(target).await {
                 Ok(data) => {
                     // Merge data into the combined OSINT data
                     self.merge_osint_data(&mut osint_data, data);
@@ -84,38 +98,47 @@ impl OsintCollector {
         }
         
         // Update target with collected OSINT data
-        target.set_osint_data(osint_data);
+        target.osint_data = osint_data;
         
         info!("Completed OSINT collection for target: {}", target.name);
         Ok(())
     }
     
     /// Run a specific OSINT source on a target
-    pub async fn collect_from_source(&self, target: &mut TargetData, source_name: &str) -> BBHuntResult<()> {
-        let source = self.sources.get(source_name)
-            .ok_or_else(|| BBHuntError::InvalidInput(format!("OSINT source not found: {}", source_name)))?;
+    pub async fn collect_from_source(&self, target: &mut TargetData, source_name: &str) -> Result<()> {
+        // Ensure initialization
+        self.ensure_initialized().await?;
+        
+        let sources = self.sources.lock().await;
+        
+        let source = sources.get(source_name)
+            .ok_or_else(|| anyhow::anyhow!("OSINT source not found: {}", source_name))?;
             
         info!("Running OSINT source {} for target: {}", source_name, target.name);
         
-        let config = self.config.get(source_name).cloned().unwrap_or_default();
-        
-        let data = source.collect(target, &config).await
-            .map_err(|e| BBHuntError::OsintError {
-                source_name: source_name.to_string(),
-                message: e.to_string(),
-            })?;
+        let data = source.collect(target).await
+            .context(format!("Failed to collect data from source {}", source_name))?;
             
         // Merge data into the target's OSINT data
-        let mut current_osint = target.osint.clone();
-        self.merge_osint_data(&mut current_osint, data);
-        target.set_osint_data(current_osint);
+        self.merge_osint_data(&mut target.osint_data, data);
         
+        Ok(())
+    }
+    
+    /// Ensure the collector is initialized
+    async fn ensure_initialized(&self) -> Result<()> {
+        if !self.initialized.load(Ordering::SeqCst) {
+            // Double-check locking pattern
+            if !self.initialized.load(Ordering::SeqCst) {
+                self.initialize().await?;
+            }
+        }
         Ok(())
     }
     
     /// Merge OSINT data from a source into the combined data
     fn merge_osint_data(&self, target_data: &mut OsintData, source_data: OsintData) {
-        // Merge company info
+        // Merge company info if not already set
         if source_data.company_info.is_some() && target_data.company_info.is_none() {
             target_data.company_info = source_data.company_info;
         }
@@ -133,9 +156,9 @@ impl OsintCollector {
         // Merge documents
         target_data.documents.extend(source_data.documents);
         
-        // Merge subdomains
-        for subdomain in source_data.subdomains {
-            target_data.subdomains.insert(subdomain);
+        // Merge discovered subdomains
+        for subdomain in source_data.discovered_subdomains {
+            target_data.discovered_subdomains.insert(subdomain);
         }
         
         // Merge employees
@@ -146,10 +169,12 @@ impl OsintCollector {
         
         // Merge DNS records
         for (domain, records) in source_data.dns_records {
-            target_data.dns_records.entry(domain).or_default().extend(records);
+            target_data.dns_records.entry(domain)
+                .or_insert_with(Vec::new)
+                .extend(records);
         }
         
-        // Merge WHOIS data
+        // Merge WHOIS data if not already set
         if source_data.whois_data.is_some() && target_data.whois_data.is_none() {
             target_data.whois_data = source_data.whois_data;
         }
@@ -159,21 +184,32 @@ impl OsintCollector {
     }
     
     /// List all available OSINT sources
-    pub fn list_sources(&self) -> Vec<String> {
-        self.sources.keys().cloned().collect()
+    pub async fn list_sources(&self) -> Result<Vec<String>> {
+        // Ensure initialization
+        self.ensure_initialized().await?;
+        
+        let sources = self.sources.lock().await;
+        let source_names = sources.keys().cloned().collect();
+        Ok(source_names)
+    }
+    
+    /// Register a custom OSINT source
+    pub async fn register_source(&self, name: &str, source: Box<dyn OsintSource>) -> Result<()> {
+        // Ensure initialization
+        self.ensure_initialized().await?;
+        
+        let mut sources = self.sources.lock().await;
+        
+        if sources.contains_key(name) {
+            warn!("Overwriting existing OSINT source: {}", name);
+        }
+        
+        sources.insert(name.to_string(), source);
+        debug!("Registered OSINT source: {}", name);
+        
+        Ok(())
     }
 }
-
-// src/osint/sources.rs
-use std::collections::HashMap;
-use std::sync::Arc;
-use async_trait::async_trait;
-use tracing::warn;
-use reqwest::Client;
-
-use crate::core::target::model::{TargetData, OsintData, DnsRecord, WhoisData, CertificateInfo};
-use crate::error::{BBHuntResult, BBHuntError};
-use crate::context::Context;
 
 /// Trait for OSINT data sources
 #[async_trait]
@@ -185,48 +221,143 @@ pub trait OsintSource: Send + Sync {
     fn description(&self) -> &str;
     
     /// Collect OSINT data for a target
-    async fn collect(&self, target: &TargetData, config: &HashMap<String, String>) -> BBHuntResult<OsintData>;
-    
-    /// Check if the source requires authentication
-    fn requires_auth(&self) -> bool {
-        false
-    }
-    
-    /// Get required configuration keys
-    fn required_config(&self) -> Vec<String> {
-        Vec::new()
-    }
-    
-    /// Set the context
-    fn set_context(&mut self, _context: Arc<Context>) {
-        // Default empty implementation
-    }
+    async fn collect(&self, target: &TargetData) -> Result<OsintData>;
 }
+
+/// OSINT data structure
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OsintData {
+    pub company_info: Option<CompanyInfo>,
+    pub social_profiles: HashMap<String, String>,
+    pub email_addresses: HashSet<String>,
+    pub documents: Vec<DocumentInfo>,
+    pub discovered_subdomains: HashSet<String>,
+    pub employees: Vec<EmployeeInfo>,
+    pub data_leaks: Vec<DataLeakInfo>,
+    pub dns_records: HashMap<String, Vec<DnsRecord>>,
+    pub whois_data: Option<WhoisData>,
+    pub certificates: Vec<CertificateInfo>,
+}
+
+// Supporting data structures
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompanyInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub founded: Option<i32>,
+    pub industry: Option<String>,
+    pub size: Option<String>,
+    pub website: Option<String>,
+    pub addresses: Vec<AddressInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddressInfo {
+    pub street: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub country: Option<String>,
+    pub postal_code: Option<String>,
+    pub address_type: Option<String>, // HQ, Branch, etc.
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmployeeInfo {
+    pub name: String,
+    pub title: Option<String>,
+    pub email: Option<String>,
+    pub social_profiles: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentInfo {
+    pub title: String,
+    pub url: String,
+    pub file_type: String,
+    pub found_at: DateTime<Utc>,
+    pub extraction_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataLeakInfo {
+    pub source: String,
+    pub date: Option<DateTime<Utc>>,
+    pub leak_type: String, // Passwords, Email addresses, etc.
+    pub affected_accounts: Option<usize>,
+    pub details: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsRecord {
+    pub record_type: String, // A, AAAA, MX, TXT, etc.
+    pub value: String,
+    pub ttl: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoisData {
+    pub registrar: Option<String>,
+    pub created_date: Option<DateTime<Utc>>,
+    pub updated_date: Option<DateTime<Utc>>,
+    pub expiry_date: Option<DateTime<Utc>>,
+    pub name_servers: Vec<String>,
+    pub registrant: Option<WhoisContact>,
+    pub admin_contact: Option<WhoisContact>,
+    pub tech_contact: Option<WhoisContact>,
+    pub raw_data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WhoisContact {
+    pub name: Option<String>,
+    pub organization: Option<String>,
+    pub email: Option<String>,
+    pub phone: Option<String>,
+    pub address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertificateInfo {
+    pub domain: String,
+    pub issuer: String,
+    pub valid_from: DateTime<Utc>,
+    pub valid_to: DateTime<Utc>,
+    pub alt_names: Vec<String>,
+    pub organization: Option<String>,
+}
+
+// ---------------------------------------------------------------
+// OSINT Source Implementations
+// ---------------------------------------------------------------
 
 /// DNS information source
 pub struct DnsOsintSource {
-    client: Client,
-    context: Option<Arc<Context>>,
+    config: AppConfig,
+    client: OnceCell<reqwest::Client>,
 }
 
 impl DnsOsintSource {
-    pub fn new() -> Self {
+    pub fn new(config: AppConfig) -> Self {
         Self {
-            client: Client::new(),
-            context: None,
+            config,
+            client: OnceCell::new(),
         }
     }
     
-    pub fn new_with_context(context: Arc<Context>) -> Self {
-        Self {
-            client: Client::new(),
-            context: Some(context),
-        }
+    // Lazy initialize the HTTP client
+    async fn get_client(&self) -> Result<&reqwest::Client> {
+        self.client.get_or_try_init(|| {
+            Ok(reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?)
+        })
     }
     
-    async fn query_dns_records(&self, domain: &str) -> BBHuntResult<Vec<DnsRecord>> {
+    async fn query_dns_records(&self, domain: &str) -> Result<Vec<DnsRecord>> {
         // This would normally use a DNS library or external tool
         // For now, we'll simulate some basic records
+        
+        // In a real implementation, you would make actual DNS queries
         
         let mut records = Vec::new();
         
@@ -265,11 +396,7 @@ impl OsintSource for DnsOsintSource {
         "Collects DNS records for target domains"
     }
     
-    fn set_context(&mut self, context: Arc<Context>) {
-        self.context = Some(context);
-    }
-    
-    async fn collect(&self, target: &TargetData, _config: &HashMap<String, String>) -> BBHuntResult<OsintData> {
+    async fn collect(&self, target: &TargetData) -> Result<OsintData> {
         let mut osint_data = OsintData::default();
         let mut dns_records = HashMap::new();
         
@@ -308,26 +435,28 @@ impl OsintSource for DnsOsintSource {
 
 /// WHOIS data source
 pub struct WhoisOsintSource {
-    client: Client,
-    context: Option<Arc<Context>>,
+    config: AppConfig,
+    client: OnceCell<reqwest::Client>,
 }
 
 impl WhoisOsintSource {
-    pub fn new() -> Self {
+    pub fn new(config: AppConfig) -> Self {
         Self {
-            client: Client::new(),
-            context: None,
+            config,
+            client: OnceCell::new(),
         }
     }
     
-    pub fn new_with_context(context: Arc<Context>) -> Self {
-        Self {
-            client: Client::new(),
-            context: Some(context),
-        }
+    // Lazy initialize the HTTP client
+    async fn get_client(&self) -> Result<&reqwest::Client> {
+        self.client.get_or_try_init(|| {
+            Ok(reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?)
+        })
     }
     
-    async fn query_whois(&self, domain: &str) -> BBHuntResult<WhoisData> {
+    async fn query_whois(&self, domain: &str) -> Result<WhoisData> {
         // This would normally use a WHOIS library or external tool
         // For now, we'll simulate basic WHOIS data
         
@@ -358,11 +487,7 @@ impl OsintSource for WhoisOsintSource {
         "Collects WHOIS data for target domains"
     }
     
-    fn set_context(&mut self, context: Arc<Context>) {
-        self.context = Some(context);
-    }
-    
-    async fn collect(&self, target: &TargetData, _config: &HashMap<String, String>) -> BBHuntResult<OsintData> {
+    async fn collect(&self, target: &TargetData) -> Result<OsintData> {
         let mut osint_data = OsintData::default();
         
         // Query WHOIS for primary domain
@@ -383,26 +508,28 @@ impl OsintSource for WhoisOsintSource {
 
 /// SSL certificate information source
 pub struct SslCertificateOsintSource {
-    client: Client,
-    context: Option<Arc<Context>>,
+    config: AppConfig,
+    client: OnceCell<reqwest::Client>,
 }
 
 impl SslCertificateOsintSource {
-    pub fn new() -> Self {
+    pub fn new(config: AppConfig) -> Self {
         Self {
-            client: Client::new(),
-            context: None,
+            config,
+            client: OnceCell::new(),
         }
     }
     
-    pub fn new_with_context(context: Arc<Context>) -> Self {
-        Self {
-            client: Client::new(),
-            context: Some(context),
-        }
+    // Lazy initialize the HTTP client
+    async fn get_client(&self) -> Result<&reqwest::Client> {
+        self.client.get_or_try_init(|| {
+            Ok(reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?)
+        })
     }
     
-    async fn query_ssl_cert(&self, domain: &str) -> BBHuntResult<CertificateInfo> {
+    async fn query_ssl_cert(&self, domain: &str) -> Result<CertificateInfo> {
         // This would normally use a SSL library or external tool
         // For now, we'll simulate basic certificate data
         
@@ -430,11 +557,7 @@ impl OsintSource for SslCertificateOsintSource {
         "Collects SSL certificate information for target domains"
     }
     
-    fn set_context(&mut self, context: Arc<Context>) {
-        self.context = Some(context);
-    }
-    
-    async fn collect(&self, target: &TargetData, _config: &HashMap<String, String>) -> BBHuntResult<OsintData> {
+    async fn collect(&self, target: &TargetData) -> Result<OsintData> {
         let mut osint_data = OsintData::default();
         let mut certificates = Vec::new();
         
@@ -473,26 +596,28 @@ impl OsintSource for SslCertificateOsintSource {
 
 /// Certificate Transparency Log source
 pub struct CtLogOsintSource {
-    client: Client,
-    context: Option<Arc<Context>>,
+    config: AppConfig,
+    client: OnceCell<reqwest::Client>,
 }
 
 impl CtLogOsintSource {
-    pub fn new() -> Self {
+    pub fn new(config: AppConfig) -> Self {
         Self {
-            client: Client::new(),
-            context: None,
+            config,
+            client: OnceCell::new(),
         }
     }
     
-    pub fn new_with_context(context: Arc<Context>) -> Self {
-        Self {
-            client: Client::new(),
-            context: Some(context),
-        }
+    // Lazy initialize the HTTP client
+    async fn get_client(&self) -> Result<&reqwest::Client> {
+        self.client.get_or_try_init(|| {
+            Ok(reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?)
+        })
     }
     
-    async fn query_ct_logs(&self, domain: &str) -> BBHuntResult<Vec<String>> {
+    async fn query_ct_logs(&self, domain: &str) -> Result<Vec<String>> {
         // This would normally query Certificate Transparency logs
         // For now, we'll simulate some discovered subdomains
         
@@ -516,11 +641,7 @@ impl OsintSource for CtLogOsintSource {
         "Discovers subdomains using Certificate Transparency logs"
     }
     
-    fn set_context(&mut self, context: Arc<Context>) {
-        self.context = Some(context);
-    }
-    
-    async fn collect(&self, target: &TargetData, _config: &HashMap<String, String>) -> BBHuntResult<OsintData> {
+    async fn collect(&self, target: &TargetData) -> Result<OsintData> {
         let mut osint_data = OsintData::default();
         
         // Query CT logs for primary domain
@@ -528,7 +649,7 @@ impl OsintSource for CtLogOsintSource {
             match self.query_ct_logs(domain).await {
                 Ok(subdomains) => {
                     for subdomain in subdomains {
-                        osint_data.subdomains.insert(subdomain);
+                        osint_data.discovered_subdomains.insert(subdomain);
                     }
                 }
                 Err(e) => {
