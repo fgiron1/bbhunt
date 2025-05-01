@@ -204,9 +204,8 @@ impl PluginManager {
                     // Execute the task
                     let result = match self_clone.run_plugin(&task.plugin, &task.target, task.options).await {
                         Ok(plugin_result) => {
-                            // Store the execution_time before moving plugin_result
-                            let execution_time = plugin_result.execution_time;
                             
+                            let execution_time = plugin_result.execution_time;
                             TaskResult {
                                 task_id: task.id.clone(),
                                 plugin: task.plugin.clone(),
@@ -497,15 +496,24 @@ impl std::fmt::Display for TaskType {
 }
 
 /// Execute shell command
-async fn execute_command(cmd: &str) -> Result<std::process::Output> {
-    debug!("Executing command: {}", cmd);
+async fn execute_command(cmd: &str, timeout_secs: Option<u64>) -> Result<std::process::Output> {
+    debug!("Executing command{}: {}", 
+           timeout_secs.map_or("".to_string(), |t| format!(" with timeout {}", t)), 
+           cmd);
     
-    let output = tokio::process::Command::new("sh")
+    let command_future = tokio::process::Command::new("sh")
         .arg("-c")
         .arg(cmd)
-        .output()
-        .await
-        .context(format!("Failed to execute command: {}", cmd))?;
+        .output();
+    
+    let output = match timeout_secs {
+        Some(secs) => {
+            tokio::time::timeout(std::time::Duration::from_secs(secs), command_future)
+                .await
+                .map_err(|_| anyhow::anyhow!("Command timed out after {} seconds: {}", secs, cmd))?
+        },
+        None => command_future.await,
+    }.context(format!("Failed to execute command: {}", cmd))?;
     
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -515,24 +523,6 @@ async fn execute_command(cmd: &str) -> Result<std::process::Output> {
     }
     
     Ok(output)
-}
-
-/// Execute shell command with a timeout
-async fn execute_command_with_timeout(cmd: &str, timeout_secs: u64) -> Result<std::process::Output> {
-    debug!("Executing command with timeout {}: {}", timeout_secs, cmd);
-    
-    let command_future = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .output();
-    
-    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), command_future).await {
-        Ok(result) => result.context(format!("Failed to execute command: {}", cmd)),
-        Err(_) => {
-            warn!("Command timed out after {} seconds: {}", timeout_secs, cmd);
-            bail!("Command timed out after {} seconds: {}", timeout_secs, cmd)
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -614,7 +604,7 @@ impl SubdomainEnumPlugin {
             .replace("{output}", output_path);
         
         // Execute command
-        let output = execute_command(&command).await?;
+        let output = execute_command(&command, None).await?;
         
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -821,7 +811,7 @@ impl WebScanPlugin {
             .replace("{output}", output_path);
         
         // Execute command
-        let output = execute_command_with_timeout(&command, 600).await?;
+        let output = execute_command(&command, Some(600)).await?;
         
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

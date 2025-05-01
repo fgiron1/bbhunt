@@ -136,7 +136,7 @@ impl App {
                 
                 if !target.subdomains.is_empty() {
                     println!("Subdomains ({})", target.subdomains.len());
-                    for (_, subdomain) in target.subdomains.iter().enumerate().take(10) {
+                    for subdomain in target.subdomains.iter().take(10) {
                         println!("  - {}", subdomain);
                     }
                     
@@ -155,7 +155,7 @@ impl App {
                 // Show OSINT data if available
                 if !target.osint_data.discovered_subdomains.is_empty() {
                     println!("\nOSINT Discovered Subdomains ({})", target.osint_data.discovered_subdomains.len());
-                    for (_, subdomain) in target.osint_data.discovered_subdomains.iter().enumerate().take(10) {
+                    for subdomain in target.osint_data.discovered_subdomains.iter().take(10) {
                         println!("  - {}", subdomain);
                     }
                     

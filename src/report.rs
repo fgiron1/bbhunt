@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Result, Context};
 use serde::{Serialize, Deserialize};
 use chrono::{DateTime, Utc};
-use tracing::{info, debug, error};
+use tracing::{info, error};
 use tokio::fs;
 use uuid::Uuid;
 
