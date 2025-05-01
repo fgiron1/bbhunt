@@ -1,4 +1,3 @@
-// src/lib.rs
 pub mod cli;
 pub mod config;
 pub mod core;
@@ -8,8 +7,9 @@ pub mod reporting;
 pub mod utils;
 pub mod osint;
 pub mod error;
+pub mod context;
 
-pub use cli::App;
+pub use cli::app::App;
 pub use config::Config;
 pub use core::{
     Plugin, 
@@ -25,3 +25,5 @@ pub use reporting::{
     Report
 };
 pub use osint::OsintCollector;
+pub use context::Context;
+pub use error::{BBHuntResult, BBHuntError};

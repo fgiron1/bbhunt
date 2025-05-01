@@ -2,10 +2,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 use async_trait::async_trait;
-use anyhow::{Result, Context};
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::{info, warn, error, debug};
+
+use crate::error::{BBHuntResult, BBHuntError, util::log_error};
+use crate::config::Config;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PluginCategory {
@@ -60,22 +62,22 @@ pub trait Plugin: Send + Sync {
     fn metadata(&self) -> &PluginMetadata;
     
     /// Initialize the plugin (called once at startup)
-    async fn init(&mut self, _config: &crate::config::Config) -> Result<()> {
+    async fn init(&mut self, _config: &Config) -> BBHuntResult<()> {
         Ok(())
     }
     
     /// Set up plugin for execution (called before each execution)
-    async fn setup(&mut self) -> Result<()>;
+    async fn setup(&mut self) -> BBHuntResult<()>;
     
     /// Execute the plugin with the given target and options
     async fn execute(
         &mut self, 
         target: &str, 
         options: Option<HashMap<String, Value>>
-    ) -> Result<PluginResult>;
+    ) -> BBHuntResult<PluginResult>;
     
     /// Clean up after execution (called after each execution)
-    async fn cleanup(&mut self) -> Result<()>;
+    async fn cleanup(&mut self) -> BBHuntResult<()>;
     
     /// Get resource requirements
     fn resource_requirements(&self) -> crate::core::resource::ResourceRequirements {
@@ -106,6 +108,7 @@ pub trait Plugin: Send + Sync {
 /// Manager for loading and running plugins
 pub struct PluginManager {
     plugins: HashMap<String, Box<dyn Plugin>>,
+    config: Option<Config>,
 }
 
 impl PluginManager {
@@ -113,11 +116,17 @@ impl PluginManager {
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
+            config: None,
         }
     }
 
+    /// Set the configuration for the plugin manager
+    pub fn set_config(&mut self, config: Config) {
+        self.config = Some(config);
+    }
+
     /// Load plugins from a directory
-    pub async fn load_plugins(&mut self, plugin_dir: &Path) -> Result<()> {
+    pub async fn load_plugins(&mut self, plugin_dir: &Path) -> BBHuntResult<()> {
         info!("Loading plugins from {}", plugin_dir.display());
         
         // This is a simplified implementation
@@ -130,11 +139,24 @@ impl PluginManager {
         
         info!("Loaded {} plugins", self.plugins.len());
         
+        // Initialize plugins with config if available
+        if let Some(ref config) = self.config {
+            for (name, plugin) in &mut self.plugins {
+                match plugin.init(config).await {
+                    Ok(_) => debug!("Initialized plugin: {}", name),
+                    Err(e) => {
+                        // Don't fail on plugin initialization error, just log it
+                        warn!("Failed to initialize plugin '{}': {}", name, e);
+                    }
+                }
+            }
+        }
+        
         Ok(())
     }
     
     /// Register a new plugin
-    pub fn register_plugin(&mut self, name: &str, plugin: Box<dyn Plugin>) -> Result<()> {
+    pub fn register_plugin(&mut self, name: &str, plugin: Box<dyn Plugin>) -> BBHuntResult<()> {
         if self.plugins.contains_key(name) {
             warn!("Plugin '{}' is already registered, overriding", name);
         }
@@ -149,28 +171,67 @@ impl PluginManager {
         plugin_name: &str, 
         target: &str, 
         options: Option<HashMap<String, Value>>
-    ) -> Result<PluginResult> {
-        let plugin = self.plugins.get_mut(plugin_name)
-            .ok_or_else(|| anyhow::anyhow!("Plugin '{}' not found", plugin_name))?;
+    ) -> BBHuntResult<PluginResult> {
+        // Get the plugin but don't fail if not found - return a Plugin Not Found result instead
+        let plugin = match self.plugins.get_mut(plugin_name) {
+            Some(plugin) => plugin,
+            None => {
+                error!("Plugin '{}' not found", plugin_name);
+                return Err(BBHuntError::PluginNotFound(plugin_name.to_string()));
+            }
+        };
         
         info!("Running plugin '{}' on target '{}'", plugin_name, target);
         
         let start_time = std::time::Instant::now();
         
-        // Setup, execute, and cleanup
-        plugin.setup().await
-            .context(format!("Failed to set up plugin '{}'", plugin_name))?;
+        // Setup, execute, and cleanup with safe error handling
+        // If any step fails, we don't want to crash the whole framework
         
-        let mut result = plugin.execute(target, options).await
-            .context(format!("Failed to execute plugin '{}'", plugin_name))?;
+        // Setup phase
+        if let Err(e) = plugin.setup().await {
+            warn!("Failed to set up plugin '{}': {}", plugin_name, e);
+            return Ok(PluginResult {
+                status: PluginStatus::Error,
+                message: format!("Setup failed: {}", e),
+                data: HashMap::new(),
+                execution_time: start_time.elapsed(),
+            });
+        }
         
-        plugin.cleanup().await
-            .context(format!("Failed to clean up plugin '{}'", plugin_name))?;
+        // Execute phase
+        let result = match plugin.execute(target, options).await {
+            Ok(result) => result,
+            Err(e) => {
+                warn!("Failed to execute plugin '{}': {}", plugin_name, e);
+                
+                // Try to cleanup even if execution failed
+                if let Err(cleanup_err) = plugin.cleanup().await {
+                    warn!("Failed to clean up plugin '{}' after execution error: {}", plugin_name, cleanup_err);
+                }
+                
+                return Ok(PluginResult {
+                    status: PluginStatus::Error,
+                    message: format!("Execution failed: {}", e),
+                    data: HashMap::new(),
+                    execution_time: start_time.elapsed(),
+                });
+            }
+        };
         
-        // Add execution time to the result
-        result.execution_time = start_time.elapsed();
+        // Cleanup phase
+        if let Err(e) = plugin.cleanup().await {
+            warn!("Failed to clean up plugin '{}': {}", plugin_name, e);
+            // We got results but cleanup failed - mark as partial success
+            return Ok(PluginResult {
+                status: PluginStatus::Partial,
+                message: format!("Execution succeeded but cleanup failed: {}", e),
+                data: result.data,
+                execution_time: start_time.elapsed(),
+            });
+        }
         
-        info!("Plugin '{}' completed in {:?}", plugin_name, result.execution_time);
+        info!("Plugin '{}' completed in {:?}", plugin_name, start_time.elapsed());
         
         Ok(result)
     }
@@ -189,69 +250,19 @@ impl PluginManager {
             .map(|plugin| plugin.metadata())
             .collect()
     }
-}
-
-// Minimal implementation of a subdomain enumeration plugin
-#[derive(Default)]
-pub struct SimpleSubdomainEnumPlugin {
-    metadata: PluginMetadata,
-}
-
-impl SimpleSubdomainEnumPlugin {
-    pub fn new() -> Self {
-        Self {
-            metadata: PluginMetadata {
-                name: "subdomain_enum".to_string(),
-                description: "Simple subdomain enumeration".to_string(),
-                version: "0.1.0".to_string(),
-                category: PluginCategory::Recon,
-                author: "BBHunt Team".to_string(),
-                required_tools: vec![],
-            },
-        }
-    }
-}
-
-#[async_trait]
-impl Plugin for SimpleSubdomainEnumPlugin {
-    fn metadata(&self) -> &PluginMetadata {
-        &self.metadata
+    
+    /// Check if a plugin exists
+    pub fn has_plugin(&self, name: &str) -> bool {
+        self.plugins.contains_key(name)
     }
     
-    async fn setup(&mut self) -> Result<()> {
-        Ok(())
+    /// Get the number of loaded plugins
+    pub fn plugin_count(&self) -> usize {
+        self.plugins.len()
     }
     
-    async fn execute(
-        &mut self, 
-        target: &str, 
-        _options: Option<HashMap<String, Value>>
-    ) -> Result<PluginResult> {
-        // Simulated results
-        let mut data = HashMap::new();
-        data.insert(
-            "subdomains".to_string(), 
-            Value::Array(vec![
-                Value::String(format!("www.{}", target)),
-                Value::String(format!("api.{}", target)),
-                Value::String(format!("blog.{}", target)),
-            ])
-        );
-        
-        Ok(PluginResult {
-            status: PluginStatus::Success,
-            message: format!("Found 3 subdomains for {}", target),
-            data,
-            execution_time: std::time::Duration::from_millis(100),
-        })
+    /// Get plugin names
+    pub fn plugin_names(&self) -> Vec<String> {
+        self.plugins.keys().cloned().collect()
     }
-    
-    async fn cleanup(&mut self) -> Result<()> {
-        Ok(())
-    }
-}
-
-// Provide a simple function to create the plugin
-pub fn create_simple_subdomain_enum() -> Box<dyn Plugin> {
-    Box::new(SimpleSubdomainEnumPlugin::new())
 }

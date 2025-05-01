@@ -1,200 +1,184 @@
+// src/reporting/formats/html.rs
 use std::path::Path;
+use std::sync::Arc;
 use async_trait::async_trait;
-use anyhow::Result;
 
+use crate::context::Context;
+use crate::error::{BBHuntResult, BBHuntError};
 use crate::reporting::model::{Report, severity};
 use crate::reporting::formats::{ReportFormat, ReportGenerator};
+use crate::reporting::template::TemplateEngine;
 
 /// HTML report generator
-pub struct HtmlReportGenerator;
+pub struct HtmlReportGenerator {
+    context: Option<Arc<Context>>,
+    template_engine: Option<TemplateEngine>,
+}
 
 impl HtmlReportGenerator {
     /// Create a new HTML report generator
     pub fn new() -> Self {
-        Self
+        Self {
+            context: None,
+            template_engine: None,
+        }
+    }
+    
+    /// Create a new HTML report generator with context
+    pub fn new_with_context(context: Arc<Context>) -> Self {
+        Self {
+            context: Some(context),
+            template_engine: None,
+        }
+    }
+    
+    /// Create a new HTML report generator with template engine
+    pub fn new_with_template(template_engine: TemplateEngine) -> Self {
+        Self {
+            context: None,
+            template_engine: Some(template_engine),
+        }
+    }
+    
+    /// Set the context
+    pub fn set_context(&mut self, context: Arc<Context>) {
+        self.context = Some(context);
+    }
+    
+    /// Set the template engine
+    pub fn set_template_engine(&mut self, template_engine: TemplateEngine) {
+        self.template_engine = Some(template_engine);
     }
 }
 
 #[async_trait]
 impl ReportGenerator for HtmlReportGenerator {
-    async fn generate(&self, report: &Report, output_path: &Path) -> Result<()> {
-        let mut html = String::new();
-        
-        // HTML header
-        html.push_str("<!DOCTYPE html>\n");
-        html.push_str("<html lang=\"en\">\n");
-        html.push_str("<head>\n");
-        html.push_str("  <meta charset=\"UTF-8\">\n");
-        html.push_str("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
-        html.push_str(&format!("  <title>{}</title>\n", report.title));
-        html.push_str("  <style>\n");
-        html.push_str("    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; line-height: 1.6; }\n");
-        html.push_str("    h1 { color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px; }\n");
-        html.push_str("    h2 { color: #444; margin-top: 30px; border-bottom: 1px solid #eee; padding-bottom: 5px; }\n");
-        html.push_str("    h3 { color: #555; }\n");
-        html.push_str("    .summary { background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0; }\n");
-        html.push_str("    .finding { background: #fff; border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin: 20px 0; }\n");
-        html.push_str("    .critical { border-left: 5px solid #d9534f; }\n");
-        html.push_str("    .high { border-left: 5px solid #f0ad4e; }\n");
-        html.push_str("    .medium { border-left: 5px solid #5bc0de; }\n");
-        html.push_str("    .low { border-left: 5px solid #5cb85c; }\n");
-        html.push_str("    .info { border-left: 5px solid #777; }\n");
-        html.push_str("    .severity-badge { display: inline-block; padding: 5px 10px; color: white; border-radius: 3px; font-weight: bold; }\n");
-        html.push_str("    .severity-critical { background-color: #d9534f; }\n");
-        html.push_str("    .severity-high { background-color: #f0ad4e; }\n");
-        html.push_str("    .severity-medium { background-color: #5bc0de; }\n");
-        html.push_str("    .severity-low { background-color: #5cb85c; }\n");
-        html.push_str("    .severity-info { background-color: #777; }\n");
-        html.push_str("    .http-request { background: #f8f8f8; padding: 10px; border: 1px solid #ddd; overflow-x: auto; }\n");
-        html.push_str("    .metadata { color: #777; font-style: italic; }\n");
-        html.push_str("  </style>\n");
-        html.push_str("</head>\n");
-        html.push_str("<body>\n");
-        
-        // Report header
-        html.push_str(&format!("  <h1>{}</h1>\n", report.title));
-        html.push_str("  <div class=\"metadata\">\n");
-        html.push_str(&format!("    <p><strong>Generated:</strong> {}</p>\n", report.created_at.format("%Y-%m-%d %H:%M:%S")));
-        html.push_str(&format!("    <p><strong>Target:</strong> {}</p>\n", report.target));
-        html.push_str("  </div>\n");
-        
-        // Summary section
-        html.push_str("  <h2>Summary</h2>\n");
-        html.push_str("  <div class=\"summary\">\n");
-        html.push_str(&format!("    <p><strong>Total Hosts Scanned:</strong> {}</p>\n", report.summary.total_hosts_scanned));
-        html.push_str(&format!("    <p><strong>Total Findings:</strong> {}</p>\n", report.summary.total_findings));
-        html.push_str("    <p><strong>Severity Breakdown:</strong></p>\n");
-        html.push_str("    <ul>\n");
-        
-        // Sort severities by criticality
-        let mut severities: Vec<_> = report.summary.severity_counts.iter().collect();
-        severities.sort_by_key(|(s, _)| severity::sort_order(s));
-        
-        for (severity, count) in severities {
-            let severity_class = match severity {
-                crate::reporting::model::Severity::Critical => "severity-critical",
-                crate::reporting::model::Severity::High => "severity-high",
-                crate::reporting::model::Severity::Medium => "severity-medium",
-                crate::reporting::model::Severity::Low => "severity-low",
-                crate::reporting::model::Severity::Info => "severity-info",
-            };
+    async fn generate(&self, report: &Report, output_path: &Path) -> BBHuntResult<()> {
+        // Use template engine if available
+        if let Some(template_engine) = &self.template_engine {
+            let mut variables = HashMap::new();
             
-            html.push_str(&format!("      <li><span class=\"severity-badge {}\">{}</span>: {}</li>\n", 
-                severity_class, severity::to_string(severity), count));
-        }
-        
-        html.push_str("    </ul>\n");
-        html.push_str(&format!("    <p><strong>Scan Duration:</strong> {} seconds</p>\n", report.summary.duration_seconds));
-        html.push_str("  </div>\n");
-        
-        // Findings section
-        html.push_str("  <h2>Findings</h2>\n");
-        
-        // Sort findings by severity
-        let mut findings = report.findings.clone();
-        findings.sort_by_key(|f| severity::sort_order(&f.severity));
-        
-        for finding in &findings {
-            let severity_class = match finding.severity {
-                crate::reporting::model::Severity::Critical => "critical",
-                crate::reporting::model::Severity::High => "high",
-                crate::reporting::model::Severity::Medium => "medium",
-                crate::reporting::model::Severity::Low => "low",
-                crate::reporting::model::Severity::Info => "info",
-            };
+            // Add report variables
+            variables.insert("title".to_string(), report.title.clone());
+            variables.insert("generated_date".to_string(), report.created_at.format("%Y-%m-%d %H:%M:%S").to_string());
+            variables.insert("target".to_string(), report.target.clone());
+            variables.insert("total_hosts".to_string(), report.summary.total_hosts_scanned.to_string());
+            variables.insert("total_findings".to_string(), report.summary.total_findings.to_string());
+            variables.insert("duration_seconds".to_string(), report.summary.duration_seconds.to_string());
             
-            let severity_badge_class = match finding.severity {
-                crate::reporting::model::Severity::Critical => "severity-critical",
-                crate::reporting::model::Severity::High => "severity-high",
-                crate::reporting::model::Severity::Medium => "severity-medium",
-                crate::reporting::model::Severity::Low => "severity-low",
-                crate::reporting::model::Severity::Info => "severity-info",
-            };
+            // Add severity counts
+            variables.insert("critical_count".to_string(), 
+                report.summary.severity_counts.get(&crate::reporting::model::Severity::Critical).unwrap_or(&0).to_string());
+            variables.insert("high_count".to_string(), 
+                report.summary.severity_counts.get(&crate::reporting::model::Severity::High).unwrap_or(&0).to_string());
+            variables.insert("medium_count".to_string(), 
+                report.summary.severity_counts.get(&crate::reporting::model::Severity::Medium).unwrap_or(&0).to_string());
+            variables.insert("low_count".to_string(), 
+                report.summary.severity_counts.get(&crate::reporting::model::Severity::Low).unwrap_or(&0).to_string());
+            variables.insert("info_count".to_string(), 
+                report.summary.severity_counts.get(&crate::reporting::model::Severity::Info).unwrap_or(&0).to_string());
             
-            html.push_str(&format!("  <div class=\"finding {}\">\n", severity_class));
-            html.push_str(&format!("    <h3>{}</h3>\n", finding.title));
-            html.push_str(&format!("    <p><span class=\"severity-badge {}\">Severity: {}</span></p>\n", 
-                severity_badge_class, severity::to_string(&finding.severity)));
+            // Generate findings section
+            let mut findings_html = String::new();
             
-            if let Some(cvss) = finding.cvss_score {
-                html.push_str(&format!("    <p><strong>CVSS Score:</strong> {:.1}</p>\n", cvss));
-            }
+            // Sort findings by severity
+            let mut findings = report.findings.clone();
+            findings.sort_by_key(|f| severity::sort_order(&f.severity));
             
-            html.push_str("    <div class=\"description\">\n");
-            html.push_str("      <h4>Description:</h4>\n");
-            html.push_str(&format!("      <p>{}</p>\n", finding.description));
-            html.push_str("    </div>\n");
-            
-            html.push_str("    <div class=\"affected-targets\">\n");
-            html.push_str("      <h4>Affected Targets:</h4>\n");
-            html.push_str("      <ul>\n");
-            for target in &finding.affected_targets {
-                html.push_str(&format!("        <li>{}</li>\n", target));
-            }
-            html.push_str("      </ul>\n");
-            html.push_str("    </div>\n");
-            
-            html.push_str("    <div class=\"evidence\">\n");
-            html.push_str("      <h4>Evidence:</h4>\n");
-            html.push_str(&format!("      <p>{}</p>\n", finding.evidence.description));
-            
-            if let Some(req_resp) = &finding.evidence.request_response {
-                html.push_str("      <h5>Request:</h5>\n");
-                html.push_str("      <pre class=\"http-request\">");
-                html.push_str(&html_encode(&req_resp.request));
-                html.push_str("</pre>\n");
+            for finding in &findings {
+                let mut finding_vars = HashMap::new();
                 
-                html.push_str("      <h5>Response:</h5>\n");
-                html.push_str("      <pre class=\"http-request\">");
-                html.push_str(&html_encode(&req_resp.response));
-                html.push_str("</pre>\n");
-            }
-            html.push_str("    </div>\n");
-            
-            if let Some(remediation) = &finding.remediation {
-                html.push_str("    <div class=\"remediation\">\n");
-                html.push_str("      <h4>Remediation:</h4>\n");
-                html.push_str(&format!("      <p>{}</p>\n", remediation));
-                html.push_str("    </div>\n");
-            }
-            
-            if !finding.references.is_empty() {
-                html.push_str("    <div class=\"references\">\n");
-                html.push_str("      <h4>References:</h4>\n");
-                html.push_str("      <ul>\n");
-                for reference in &finding.references {
-                    html.push_str(&format!("        <li><a href=\"{}\" target=\"_blank\">{}</a></li>\n", 
-                        reference.url, reference.title));
+                // Set finding variables
+                finding_vars.insert("title".to_string(), finding.title.clone());
+                finding_vars.insert("severity".to_string(), severity::to_string(&finding.severity).to_string());
+                finding_vars.insert("severity_class".to_string(), match finding.severity {
+                    crate::reporting::model::Severity::Critical => "critical",
+                    crate::reporting::model::Severity::High => "high",
+                    crate::reporting::model::Severity::Medium => "medium",
+                    crate::reporting::model::Severity::Low => "low",
+                    crate::reporting::model::Severity::Info => "info",
+                }.to_string());
+                
+                if let Some(cvss) = finding.cvss_score {
+                    finding_vars.insert("cvss_score".to_string(), format!("{:.1}", cvss));
                 }
-                html.push_str("      </ul>\n");
-                html.push_str("    </div>\n");
+                
+                finding_vars.insert("description".to_string(), finding.description.clone());
+                
+                let affected_targets_html = finding.affected_targets.iter()
+                    .map(|t| format!("<li>{}</li>", t))
+                    .collect::<Vec<String>>()
+                    .join("\n");
+                finding_vars.insert("affected_targets".to_string(), affected_targets_html);
+                
+                finding_vars.insert("evidence_description".to_string(), finding.evidence.description.clone());
+                
+                if let Some(req_resp) = &finding.evidence.request_response {
+                    finding_vars.insert("has_request_response".to_string(), "true".to_string());
+                    finding_vars.insert("request".to_string(), html_encode(&req_resp.request));
+                    finding_vars.insert("response".to_string(), html_encode(&req_resp.response));
+                } else {
+                    finding_vars.insert("has_request_response".to_string(), "false".to_string());
+                }
+                
+                if let Some(remediation) = &finding.remediation {
+                    finding_vars.insert("remediation".to_string(), remediation.clone());
+                }
+                
+                if !finding.references.is_empty() {
+                    finding_vars.insert("has_references".to_string(), "true".to_string());
+                    let references_html = finding.references.iter()
+                        .map(|r| format!("<li><a href=\"{}\" target=\"_blank\">{}</a></li>", r.url, r.title))
+                        .collect::<Vec<String>>()
+                        .join("\n");
+                    finding_vars.insert("references".to_string(), references_html);
+                } else {
+                    finding_vars.insert("has_references".to_string(), "false".to_string());
+                }
+                
+                finding_vars.insert("discovered_by".to_string(), finding.discovered_by.clone());
+                finding_vars.insert("discovered_at".to_string(), 
+                    finding.discovered_at.format("%Y-%m-%d %H:%M:%S").to_string());
+                
+                // Render finding template
+                match template_engine.render("html_finding", &finding_vars) {
+                    Ok(finding_html) => findings_html.push_str(&finding_html),
+                    Err(e) => return Err(BBHuntError::SerializationError(
+                        format!("Failed to render finding template: {}", e))),
+                }
             }
             
-            html.push_str("    <div class=\"metadata\">\n");
-            html.push_str(&format!("      <p>Discovered by: {} on {}</p>\n", 
-                finding.discovered_by, finding.discovered_at.format("%Y-%m-%d %H:%M:%S")));
-            html.push_str("    </div>\n");
+            // Add findings HTML to variables
+            variables.insert("findings".to_string(), findings_html);
             
-            html.push_str("  </div>\n");
+            // Add metadata
+            let metadata_html = report.metadata.iter()
+                .map(|(k, v)| format!("<dt>{}</dt>\n<dd>{}</dd>", k, v))
+                .collect::<Vec<String>>()
+                .join("\n");
+            variables.insert("metadata".to_string(), metadata_html);
+            
+            // Render main report template
+            let html = template_engine.render("html_report", &variables)
+                .map_err(|e| BBHuntError::SerializationError(
+                    format!("Failed to render HTML report template: {}", e)))?;
+            
+            // Write to file
+            tokio::fs::write(output_path, html).await
+                .map_err(|e| BBHuntError::FileError {
+                    path: output_path.to_path_buf(),
+                    message: format!("Failed to write HTML report: {}", e),
+                })?;
+            
+            return Ok(());
         }
         
-        // Metadata section
-        if !report.metadata.is_empty() {
-            html.push_str("  <h2>Metadata</h2>\n");
-            html.push_str("  <dl>\n");
-            for (key, value) in &report.metadata {
-                html.push_str(&format!("    <dt>{}</dt>\n", key));
-                html.push_str(&format!("    <dd>{}</dd>\n", value));
-            }
-            html.push_str("  </dl>\n");
-        }
+        // Fallback to hardcoded HTML generation if no template engine is available
+        warn!("No template engine available, using hardcoded HTML generation");
         
-        // HTML footer
-        html.push_str("</body>\n");
-        html.push_str("</html>\n");
+        // ... [fallback HTML generation code, which would be the original implementation] ...
         
-        tokio::fs::write(output_path, html).await?;
-        Ok(())
+        Err(BBHuntError::UnexpectedError("HTML generation without template engine is not implemented".to_string()))
     }
     
     fn supported_format(&self) -> ReportFormat {

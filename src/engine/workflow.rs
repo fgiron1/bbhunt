@@ -1,8 +1,11 @@
+// src/engine/workflow.rs
 use std::collections::{HashMap, HashSet};
-use anyhow::Result;
-use serde::{Serialize, Deserialize};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use tracing::{info, debug, warn};
 
+use crate::error::{BBHuntResult, BBHuntError};
+use crate::context::Context;
 use super::task::{TaskDefinition, TaskResult, TaskStatus};
 use super::parallel::ParallelExecutor;
 
@@ -40,6 +43,7 @@ pub struct Workflow {
     pub name: String,
     pub steps: Vec<WorkflowStep>,
     executor: ParallelExecutor,
+    context: Option<Arc<Context>>,
 }
 
 impl Workflow {
@@ -49,11 +53,31 @@ impl Workflow {
             name,
             steps,
             executor,
+            context: None,
         }
     }
     
+    /// Create a new workflow with context
+    pub fn new_with_context(name: String, steps: Vec<WorkflowStep>, context: Arc<Context>) -> Self {
+        let plugin_manager = context.plugin_manager.clone();
+        let executor = ParallelExecutor::new(4, plugin_manager); // Default concurrency
+        
+        Self {
+            name,
+            steps,
+            executor,
+            context: Some(context),
+        }
+    }
+    
+    /// Set the context
+    pub fn set_context(&mut self, context: Arc<Context>) {
+        self.context = Some(context.clone());
+        self.executor.set_context(context);
+    }
+    
     /// Execute the workflow
-    pub async fn execute(&self) -> Result<WorkflowResult> {
+    pub async fn execute(&self) -> BBHuntResult<WorkflowResult> {
         info!("Starting workflow: {}", self.name);
         let start_time = chrono::Utc::now();
         
@@ -70,7 +94,7 @@ impl Workflow {
                 .collect();
             
             if runnable_steps.is_empty() && !pending_steps.is_empty() {
-                return Err(anyhow::anyhow!("Circular dependency detected in workflow steps"));
+                return Err(BBHuntError::DependencyError("Circular dependency detected in workflow steps".to_string()));
             }
             
             debug!("Found {} runnable steps", runnable_steps.len());
@@ -90,7 +114,10 @@ impl Workflow {
                 if failed_tasks > 0 && !step.continue_on_error {
                     warn!("Step {} failed with {} failed tasks", step.name, failed_tasks);
                     if !step.continue_on_error {
-                        return Err(anyhow::anyhow!("Workflow step {} failed", step.name));
+                        return Err(BBHuntError::TaskExecutionError {
+                            task_id: step.name.clone(),
+                            message: format!("Workflow step failed with {} failed tasks", failed_tasks),
+                        });
                     }
                 }
                 
@@ -130,26 +157,60 @@ impl Workflow {
     }
     
     /// Load workflow from a file
-    pub fn load(path: &std::path::Path, executor: ParallelExecutor) -> Result<Self> {
-        let json = std::fs::read_to_string(path)?;
-        let workflow_data: WorkflowData = serde_json::from_str(&json)?;
+    pub fn load(path: &std::path::Path, executor: ParallelExecutor) -> BBHuntResult<Self> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| BBHuntError::FileError {
+                path: path.to_path_buf(),
+                message: format!("Failed to read file: {}", e),
+            })?;
+            
+        let workflow_data: WorkflowData = serde_json::from_str(&json)
+            .map_err(|e| BBHuntError::SerializationError(format!("Failed to parse JSON: {}", e)))?;
         
         Ok(Self {
             name: workflow_data.name,
             steps: workflow_data.steps,
             executor,
+            context: None,
+        })
+    }
+    
+    /// Load workflow from a file with context
+    pub fn load_with_context(path: &std::path::Path, context: Arc<Context>) -> BBHuntResult<Self> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| BBHuntError::FileError {
+                path: path.to_path_buf(),
+                message: format!("Failed to read file: {}", e),
+            })?;
+            
+        let workflow_data: WorkflowData = serde_json::from_str(&json)
+            .map_err(|e| BBHuntError::SerializationError(format!("Failed to parse JSON: {}", e)))?;
+        
+        let executor = ParallelExecutor::new_with_context(4, context.clone()); // Default concurrency
+        
+        Ok(Self {
+            name: workflow_data.name,
+            steps: workflow_data.steps,
+            executor,
+            context: Some(context),
         })
     }
     
     /// Save workflow to a file
-    pub fn save(&self, path: &std::path::Path) -> Result<()> {
+    pub fn save(&self, path: &std::path::Path) -> BBHuntResult<()> {
         let workflow_data = WorkflowData {
             name: self.name.clone(),
             steps: self.steps.clone(),
         };
         
-        let json = serde_json::to_string_pretty(&workflow_data)?;
-        std::fs::write(path, json)?;
+        let json = serde_json::to_string_pretty(&workflow_data)
+            .map_err(|e| BBHuntError::SerializationError(format!("Failed to serialize workflow: {}", e)))?;
+            
+        std::fs::write(path, json)
+            .map_err(|e| BBHuntError::FileError {
+                path: path.to_path_buf(),
+                message: format!("Failed to write file: {}", e),
+            })?;
         
         Ok(())
     }

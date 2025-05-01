@@ -1,19 +1,24 @@
 use std::collections::HashMap;
-use anyhow::{Result, Context};
+use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::Value;
+use tokio::sync::Mutex;
 use tracing::{info, debug, error};
 use tempfile::NamedTempFile;
 
+use crate::context::Context;
 use crate::core::plugin::{Plugin, PluginMetadata, PluginCategory, PluginResult, PluginStatus};
 use crate::utils::http::HttpClient;
 use crate::utils::shell;
+use crate::error::{BBHuntResult, BBHuntError};
+use crate::config::Config;
 
 /// Subdomain enumeration plugin
 pub struct SubdomainEnumPlugin {
     metadata: PluginMetadata,
     http_client: Option<HttpClient>,
     tools: Vec<SubdomainTool>,
+    context: Option<Arc<Context>>,
 }
 
 #[derive(Debug)]
@@ -37,7 +42,13 @@ impl SubdomainEnumPlugin {
             },
             http_client: None,
             tools: Vec::new(),
+            context: None,
         }
+    }
+    
+    /// Set the context
+    pub fn set_context(&mut self, context: Arc<Context>) {
+        self.context = Some(context);
     }
     
     /// Run a subdomain enumeration tool
@@ -46,13 +57,18 @@ impl SubdomainEnumPlugin {
         target: &str, 
         tool_name: &str, 
         command_template: &str
-    ) -> Result<Vec<String>> {
+    ) -> BBHuntResult<Vec<String>> {
         debug!("Running subdomain tool {} on target {}", tool_name, target);
         
         // Create temporary output file
-        let output_file = NamedTempFile::new()?;
+        let output_file = NamedTempFile::new()
+            .map_err(|e| BBHuntError::FileError {
+                path: std::path::PathBuf::from("temp"),
+                message: format!("Failed to create temporary file: {}", e),
+            })?;
+            
         let output_path = output_file.path().to_str()
-            .ok_or_else(|| anyhow::anyhow!("Failed to convert path to string"))?;
+            .ok_or_else(|| BBHuntError::UnexpectedError("Failed to convert path to string".to_string()))?;
         
         // Format command
         let command = command_template
@@ -60,17 +76,27 @@ impl SubdomainEnumPlugin {
             .replace("{output}", output_path);
         
         // Execute command
-        let output = shell::execute_command(&command).await?;
+        let output = shell::execute_command(&command).await
+            .map_err(|e| BBHuntError::ExternalToolError {
+                tool: tool_name.to_string(),
+                message: format!("Command execution failed: {}", e),
+            })?;
         
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             error!("Subdomain tool {} failed: {}", tool_name, stderr);
-            return Err(anyhow::anyhow!("Subdomain tool {} failed: {}", tool_name, stderr));
+            return Err(BBHuntError::ExternalToolError {
+                tool: tool_name.to_string(),
+                message: format!("Tool failed: {}", stderr),
+            });
         }
         
         // Read results
         let content = std::fs::read_to_string(output_path)
-            .context(format!("Failed to read output from {}", tool_name))?;
+            .map_err(|e| BBHuntError::FileError {
+                path: std::path::PathBuf::from(output_path),
+                message: format!("Failed to read output: {}", e),
+            })?;
         
         // Parse results
         let subdomains : Vec<String> = content
@@ -84,11 +110,11 @@ impl SubdomainEnumPlugin {
     }
     
     /// Verify which subdomains are live
-    async fn verify_live_subdomains(&self, subdomains: &[String]) -> Result<Vec<String>> {
+    async fn verify_live_subdomains(&self, subdomains: &[String]) -> BBHuntResult<Vec<String>> {
         debug!("Verifying {} subdomains", subdomains.len());
         
         let client = self.http_client.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("HTTP client not initialized"))?;
+            .ok_or_else(|| BBHuntError::UnexpectedError("HTTP client not initialized".to_string()))?;
         
         let mut live_subdomains = Vec::new();
         
@@ -119,12 +145,12 @@ impl Plugin for SubdomainEnumPlugin {
         &self.metadata
     }
     
-    async fn init(&mut self, config: &crate::config::Config) -> Result<()> {
+    async fn init(&mut self, config: &Config) -> BBHuntResult<()> {
         // Initialize HTTP client
         self.http_client = Some(HttpClient::new(
             Some(config.global.user_agent.clone()),
             None,
-        )?);
+        ).map_err(|e| BBHuntError::NetworkError(format!("Failed to initialize HTTP client: {}", e)))?);
         
         // Configure tools
         self.tools = vec![
@@ -143,7 +169,7 @@ impl Plugin for SubdomainEnumPlugin {
         Ok(())
     }
 
-    async fn setup(&mut self) -> Result<()> {
+    async fn setup(&mut self) -> BBHuntResult<()> {
         // Nothing to do here
         Ok(())
     }
@@ -152,7 +178,7 @@ impl Plugin for SubdomainEnumPlugin {
         &mut self, 
         target: &str, 
         options: Option<HashMap<String, Value>>
-    ) -> Result<PluginResult> {
+    ) -> BBHuntResult<PluginResult> {
         info!("Running subdomain enumeration on target: {}", target);
         
         let start_time = std::time::Instant::now();
@@ -182,6 +208,7 @@ impl Plugin for SubdomainEnumPlugin {
                 }
                 Err(e) => {
                     error!("Error running {}: {}", tool.name, e);
+                    // Continue with other tools - don't fail the entire plugin
                 }
             }
         }
@@ -197,7 +224,14 @@ impl Plugin for SubdomainEnumPlugin {
         unique_subdomains.sort();
 
         // Verify live subdomains
-        let live_subdomains = self.verify_live_subdomains(&unique_subdomains).await?;
+        let live_subdomains = match self.verify_live_subdomains(&unique_subdomains).await {
+            Ok(live) => live,
+            Err(e) => {
+                error!("Error verifying live subdomains: {}", e);
+                // Return empty live subdomains but don't fail
+                Vec::new()
+            }
+        };
 
         // Build result
         let mut result_data = HashMap::new();
@@ -219,7 +253,7 @@ impl Plugin for SubdomainEnumPlugin {
         })
     }
 
-    async fn cleanup(&mut self) -> Result<()> {
+    async fn cleanup(&mut self) -> BBHuntResult<()> {
         // Nothing to clean up
         Ok(())
     }
