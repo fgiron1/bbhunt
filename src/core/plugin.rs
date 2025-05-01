@@ -60,7 +60,7 @@ pub trait Plugin: Send + Sync {
     fn metadata(&self) -> &PluginMetadata;
     
     /// Initialize the plugin (called once at startup)
-    async fn init(&mut self, config: &crate::config::Config) -> Result<()> {
+    async fn init(&mut self, _config: &crate::config::Config) -> Result<()> {
         Ok(())
     }
     

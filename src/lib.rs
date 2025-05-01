@@ -1,3 +1,4 @@
+// src/lib.rs
 pub mod cli;
 pub mod config;
 pub mod core;
@@ -5,14 +6,15 @@ pub mod engine;
 pub mod plugins;
 pub mod reporting;
 pub mod utils;
+pub mod osint;
+pub mod error;
 
-// Re-export main types for easier access
 pub use cli::App;
 pub use config::Config;
 pub use core::{
     Plugin, 
     PluginManager, 
-    Target, 
+    TargetData, 
     TargetManager,
     ResourceManager
 };
@@ -22,3 +24,4 @@ pub use reporting::{
     ReportFormat, 
     Report
 };
+pub use osint::OsintCollector;

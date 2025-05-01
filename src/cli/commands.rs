@@ -5,6 +5,16 @@ use std::path::PathBuf;
 use crate::config::Config;
 use crate::core::plugin::PluginManager;
 use crate::core::resource::ResourceManager;
+use crate::core::target::TargetManager;
+use crate::osint::{
+    OsintCollector,
+    sources::{
+        DnsOsintSource,
+        WhoisOsintSource,
+        SslCertificateOsintSource,
+        CtLogOsintSource
+    }
+};
 
 #[derive(Parser)]
 #[command(name = "bbhunt")]
@@ -99,6 +109,13 @@ pub enum Commands {
         #[arg(short, long, help = "Force overwrite existing configuration")]
         force: bool,
     },
+    Osint {
+        #[arg(help = "Target ID")]
+        target_id: String,
+        
+        #[arg(short, long, help = "OSINT source to use (default: all)")]
+        source: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -158,6 +175,9 @@ pub async fn execute_command(
         },
         Commands::Init { force } => {
             handle_init_command(*force, config).await
+        },
+        Commands::Osint { target_id, source } => {
+            handle_osint_command(target_id, source, config).await
         },
     }
 }
@@ -232,5 +252,51 @@ async fn handle_resources_command(_resource_manager: &ResourceManager) -> Result
 }
 
 async fn handle_init_command(_force: bool, _config: &mut Config) -> Result<()> {
+    Ok(())
+}
+
+async fn handle_osint_command(
+    target_id: &str, 
+    source: &Option<String>,
+    config: &mut Config
+) -> Result<()> {
+    let mut target_manager = TargetManager::new(config.global.data_dir.join("targets"));
+    target_manager.init().await?;
+    
+    // Load target
+    let target = target_manager.load_target(target_id).await?;
+    println!("Running OSINT collection for target: {}", target.name);
+    
+    // Create OSINT collector
+    let mut osint_collector = OsintCollector::new();
+    
+    // Register OSINT sources
+    osint_collector.register_source(Box::new(DnsOsintSource::new()))?;
+    osint_collector.register_source(Box::new(WhoisOsintSource::new()))?;
+    osint_collector.register_source(Box::new(SslCertificateOsintSource::new()))?;
+    osint_collector.register_source(Box::new(CtLogOsintSource::new()))?;
+    
+    if let Some(source_name) = source {
+        // Run specific source
+        println!("Running OSINT source: {}", source_name);
+        let mut target_data = target_manager.get_target_mut(target_id)
+            .ok_or_else(|| anyhow::anyhow!("Target not found: {}", target_id))?;
+            
+        osint_collector.collect_from_source(target_data, source_name).await?;
+    } else {
+        // Run all sources
+        println!("Running all OSINT sources");
+        let mut target_data = target_manager.get_target_mut(target_id)
+            .ok_or_else(|| anyhow::anyhow!("Target not found: {}", target_id))?;
+            
+        osint_collector.collect_all(target_data).await?;
+    }
+    
+    // Save target with updated OSINT data
+    target_manager.save_target(
+        target_manager.get_target(target_id).unwrap()
+    ).await?;
+    
+    println!("OSINT collection completed");
     Ok(())
 }

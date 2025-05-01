@@ -1,0 +1,60 @@
+<!-- templates/report_template.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; line-height: 1.6; }
+        h1 { color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+        h2 { color: #444; margin-top: 30px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        h3 { color: #555; }
+        .summary { background: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        .finding { background: #fff; border: 1px solid #ddd; border-radius: 5px; padding: 15px; margin: 20px 0; }
+        .critical { border-left: 5px solid #d9534f; }
+        .high { border-left: 5px solid #f0ad4e; }
+        .medium { border-left: 5px solid #5bc0de; }
+        .low { border-left: 5px solid #5cb85c; }
+        .info { border-left: 5px solid #777; }
+        .severity-badge { display: inline-block; padding: 5px 10px; color: white; border-radius: 3px; font-weight: bold; }
+        .severity-critical { background-color: #d9534f; }
+        .severity-high { background-color: #f0ad4e; }
+        .severity-medium { background-color: #5bc0de; }
+        .severity-low { background-color: #5cb85c; }
+        .severity-info { background-color: #777; }
+        .http-request { background: #f8f8f8; padding: 10px; border: 1px solid #ddd; overflow-x: auto; }
+        .metadata { color: #777; font-style: italic; }
+    </style>
+</head>
+<body>
+    <h1>{{ title }}</h1>
+    <div class="metadata">
+        <p><strong>Generated:</strong> {{ generated_date }}</p>
+        <p><strong>Target:</strong> {{ target }}</p>
+    </div>
+    
+    <h2>Summary</h2>
+    <div class="summary">
+        <p><strong>Total Hosts Scanned:</strong> {{ total_hosts }}</p>
+        <p><strong>Total Findings:</strong> {{ total_findings }}</p>
+        <p><strong>Severity Breakdown:</strong></p>
+        <ul>
+            <li><span class="severity-badge severity-critical">Critical</span>: {{ critical_count }}</li>
+            <li><span class="severity-badge severity-high">High</span>: {{ high_count }}</li>
+            <li><span class="severity-badge severity-medium">Medium</span>: {{ medium_count }}</li>
+            <li><span class="severity-badge severity-low">Low</span>: {{ low_count }}</li>
+            <li><span class="severity-badge severity-info">Info</span>: {{ info_count }}</li>
+        </ul>
+        <p><strong>Scan Duration:</strong> {{ duration_seconds }} seconds</p>
+    </div>
+    
+    <h2>Findings</h2>
+    {{ findings }}
+    
+    <h2>Metadata</h2>
+    <dl>
+        {{ metadata }}
+    </dl>
+</body>
+</html>

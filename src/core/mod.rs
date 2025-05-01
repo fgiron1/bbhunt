@@ -11,9 +11,8 @@ pub use plugin::{
     PluginCategory
 };
 pub use target::{
-    Target, 
+    TargetData, 
     TargetManager, 
-    TargetSpecifier, 
-    format_target_specifier
+    TargetSpecifier,
 };
 pub use resource::ResourceManager;

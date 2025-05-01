@@ -1,0 +1,54 @@
+<!-- templates/finding_template.html -->
+<div class="finding {{ severity_class }}">
+    <h3>{{ title }}</h3>
+    <p><span class="severity-badge severity-{{ severity_class }}">Severity: {{ severity }}</span></p>
+    
+    {{#if cvss_score}}
+    <p><strong>CVSS Score:</strong> {{ cvss_score }}</p>
+    {{/if}}
+    
+    <div class="description">
+        <h4>Description:</h4>
+        <p>{{ description }}</p>
+    </div>
+    
+    <div class="affected-targets">
+        <h4>Affected Targets:</h4>
+        <ul>
+            {{ affected_targets }}
+        </ul>
+    </div>
+    
+    <div class="evidence">
+        <h4>Evidence:</h4>
+        <p>{{ evidence_description }}</p>
+        
+        {{#if has_request_response}}
+        <h5>Request:</h5>
+        <pre class="http-request">{{ request }}</pre>
+        
+        <h5>Response:</h5>
+        <pre class="http-request">{{ response }}</pre>
+        {{/if}}
+    </div>
+    
+    {{#if remediation}}
+    <div class="remediation">
+        <h4>Remediation:</h4>
+        <p>{{ remediation }}</p>
+    </div>
+    {{/if}}
+    
+    {{#if has_references}}
+    <div class="references">
+        <h4>References:</h4>
+        <ul>
+            {{ references }}
+        </ul>
+    </div>
+    {{/if}}
+    
+    <div class="metadata">
+        <p>Discovered by: {{ discovered_by }} on {{ discovered_at }}</p>
+    </div>
+</div>
