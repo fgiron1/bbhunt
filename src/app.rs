@@ -1,4 +1,4 @@
-// src/app.rs
+// src/app.rs - Complete implementation with OSINT integration
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, Context};
@@ -8,6 +8,7 @@ use crate::config::AppConfig;
 use crate::plugin::PluginManager;
 use crate::target::TargetManager;
 use crate::report::ReportManager;
+use crate::osint::OsintCollector;
 
 /// Main application struct that holds all components and state
 pub struct App {
@@ -15,6 +16,7 @@ pub struct App {
     plugin_manager: Arc<PluginManager>,
     target_manager: Arc<TargetManager>,
     report_manager: Arc<ReportManager>,
+    osint_collector: Arc<OsintCollector>,
     initialized: bool,
 }
 
@@ -28,6 +30,7 @@ impl App {
             plugin_manager: Arc::new(PluginManager::new(config.clone())),
             target_manager: Arc::new(TargetManager::new(config.clone())),
             report_manager: Arc::new(ReportManager::new(config.clone())),
+            osint_collector: Arc::new(OsintCollector::new(config.clone())),
             initialized: false,
         }
     }
@@ -41,6 +44,7 @@ impl App {
         self.plugin_manager.initialize().await?;
         self.target_manager.initialize().await?;
         self.report_manager.initialize().await?;
+        // Note: OSINT collector uses lazy initialization
         
         self.initialized = true;
         info!("Application initialized successfully");
@@ -64,6 +68,7 @@ impl App {
             Command::Report(report_cmd) => self.handle_report_command(report_cmd).await,
             Command::Plugin(plugin_cmd) => self.handle_plugin_command(plugin_cmd).await,
             Command::Parallel(parallel_cmd) => self.handle_parallel_command(parallel_cmd).await,
+            Command::Osint(osint_cmd) => self.handle_osint_command(osint_cmd).await,
         }
     }
     
@@ -145,6 +150,26 @@ impl App {
                     for ip in &target.ip_addresses {
                         println!("  - {}", ip);
                     }
+                }
+                
+                // Show OSINT data if available
+                if !target.osint_data.discovered_subdomains.is_empty() {
+                    println!("\nOSINT Discovered Subdomains ({})", target.osint_data.discovered_subdomains.len());
+                    for (i, subdomain) in target.osint_data.discovered_subdomains.iter().enumerate().take(10) {
+                        println!("  - {}", subdomain);
+                    }
+                    
+                    if target.osint_data.discovered_subdomains.len() > 10 {
+                        println!("  ... and {} more", target.osint_data.discovered_subdomains.len() - 10);
+                    }
+                }
+                
+                if target.osint_data.whois_data.is_some() {
+                    println!("\nWHOIS Information Available");
+                }
+                
+                if !target.osint_data.certificates.is_empty() {
+                    println!("\nSSL Certificates: {}", target.osint_data.certificates.len());
                 }
                 
                 Ok(())
@@ -244,6 +269,64 @@ impl App {
         }
     }
     
+    /// Handle OSINT-related commands
+    async fn handle_osint_command(&self, command: &OsintCommand) -> Result<()> {
+        match command {
+            OsintCommand::Collect { target, source } => {
+                // Get target
+                let mut target_data = self.target_manager.get_target_by_name_or_id(target).await?;
+                
+                if let Some(source_name) = source {
+                    // Run specific OSINT source
+                    info!("Running OSINT source {} on target '{}'", source_name, target);
+                    self.osint_collector.collect_from_source(&mut target_data, source_name).await?;
+                } else {
+                    // Run all OSINT sources
+                    info!("Running all OSINT sources on target '{}'", target);
+                    self.osint_collector.collect_all(&mut target_data).await?;
+                }
+                
+                // Save updated target data
+                self.target_manager.save_target(&target_data).await?;
+                
+                // Display summary of collected data
+                println!("OSINT collection completed for target '{}'", target);
+                
+                if !target_data.osint_data.discovered_subdomains.is_empty() {
+                    println!("- Discovered {} subdomains", target_data.osint_data.discovered_subdomains.len());
+                }
+                
+                if target_data.osint_data.whois_data.is_some() {
+                    println!("- WHOIS information collected");
+                }
+                
+                if !target_data.osint_data.certificates.is_empty() {
+                    println!("- Collected {} SSL certificates", target_data.osint_data.certificates.len());
+                }
+                
+                if !target_data.osint_data.dns_records.is_empty() {
+                    let count: usize = target_data.osint_data.dns_records.values().map(|v| v.len()).sum();
+                    println!("- Collected {} DNS records", count);
+                }
+                
+                println!("\nUse 'target show {}' to see more details", target);
+                
+                Ok(())
+            },
+            OsintCommand::Sources => {
+                // List available OSINT sources
+                let sources = self.osint_collector.list_sources().await?;
+                
+                println!("{} OSINT sources available:", sources.len());
+                for source in sources {
+                    println!("- {}", source);
+                }
+                
+                Ok(())
+            }
+        }
+    }
+    
     /// Handle parallel execution commands
     async fn handle_parallel_command(&self, command: &ParallelCommand) -> Result<()> {
         match command {
@@ -315,6 +398,11 @@ impl App {
     pub fn report_manager(&self) -> &Arc<ReportManager> {
         &self.report_manager
     }
+    
+    /// Get a reference to the OSINT collector
+    pub fn osint_collector(&self) -> &Arc<OsintCollector> {
+        &self.osint_collector
+    }
 }
 
 /// Command enum representing all possible CLI commands
@@ -325,6 +413,7 @@ pub enum Command {
     Report(ReportCommand),
     Plugin(PluginCommand),
     Parallel(ParallelCommand),
+    Osint(OsintCommand),
 }
 
 /// Target management commands
@@ -372,6 +461,16 @@ pub enum PluginCommand {
     List {
         category: Option<String>,
     },
+}
+
+/// OSINT collection commands
+#[derive(Debug, Clone)]
+pub enum OsintCommand {
+    Collect {
+        target: String,
+        source: Option<String>,
+    },
+    Sources,
 }
 
 /// Parallel execution commands
