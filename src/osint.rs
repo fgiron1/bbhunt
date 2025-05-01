@@ -12,6 +12,10 @@ use once_cell::sync::OnceCell;
 
 use crate::config::AppConfig;
 use crate::target::TargetData;
+// Import OsintData and related types from target.rs instead of defining duplicates
+use crate::target::{OsintData, CompanyInfo, EmployeeInfo, DocumentInfo, 
+                   DataLeakInfo, DnsRecord, WhoisData, WhoisContact, 
+                   CertificateInfo, AddressInfo};
 
 /// OSINT collector with lazy loading of sources
 pub struct OsintCollector {
@@ -224,108 +228,6 @@ pub trait OsintSource: Send + Sync {
     async fn collect(&self, target: &TargetData) -> Result<OsintData>;
 }
 
-/// OSINT data structure
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct OsintData {
-    pub company_info: Option<CompanyInfo>,
-    pub social_profiles: HashMap<String, String>,
-    pub email_addresses: HashSet<String>,
-    pub documents: Vec<DocumentInfo>,
-    pub discovered_subdomains: HashSet<String>,
-    pub employees: Vec<EmployeeInfo>,
-    pub data_leaks: Vec<DataLeakInfo>,
-    pub dns_records: HashMap<String, Vec<DnsRecord>>,
-    pub whois_data: Option<WhoisData>,
-    pub certificates: Vec<CertificateInfo>,
-}
-
-// Supporting data structures
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompanyInfo {
-    pub name: String,
-    pub description: Option<String>,
-    pub founded: Option<i32>,
-    pub industry: Option<String>,
-    pub size: Option<String>,
-    pub website: Option<String>,
-    pub addresses: Vec<AddressInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddressInfo {
-    pub street: Option<String>,
-    pub city: Option<String>,
-    pub state: Option<String>,
-    pub country: Option<String>,
-    pub postal_code: Option<String>,
-    pub address_type: Option<String>, // HQ, Branch, etc.
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EmployeeInfo {
-    pub name: String,
-    pub title: Option<String>,
-    pub email: Option<String>,
-    pub social_profiles: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocumentInfo {
-    pub title: String,
-    pub url: String,
-    pub file_type: String,
-    pub found_at: DateTime<Utc>,
-    pub extraction_source: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DataLeakInfo {
-    pub source: String,
-    pub date: Option<DateTime<Utc>>,
-    pub leak_type: String, // Passwords, Email addresses, etc.
-    pub affected_accounts: Option<usize>,
-    pub details: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DnsRecord {
-    pub record_type: String, // A, AAAA, MX, TXT, etc.
-    pub value: String,
-    pub ttl: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WhoisData {
-    pub registrar: Option<String>,
-    pub created_date: Option<DateTime<Utc>>,
-    pub updated_date: Option<DateTime<Utc>>,
-    pub expiry_date: Option<DateTime<Utc>>,
-    pub name_servers: Vec<String>,
-    pub registrant: Option<WhoisContact>,
-    pub admin_contact: Option<WhoisContact>,
-    pub tech_contact: Option<WhoisContact>,
-    pub raw_data: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WhoisContact {
-    pub name: Option<String>,
-    pub organization: Option<String>,
-    pub email: Option<String>,
-    pub phone: Option<String>,
-    pub address: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CertificateInfo {
-    pub domain: String,
-    pub issuer: String,
-    pub valid_from: DateTime<Utc>,
-    pub valid_to: DateTime<Utc>,
-    pub alt_names: Vec<String>,
-    pub organization: Option<String>,
-}
-
 // ---------------------------------------------------------------
 // OSINT Source Implementations
 // ---------------------------------------------------------------
@@ -353,7 +255,7 @@ impl DnsOsintSource {
         })
     }
     
-    async fn query_dns_records(&self, domain: &str) -> Result<Vec<DnsRecord>> {
+    async fn query_dns_records(&self, _domain: &str) -> Result<Vec<DnsRecord>> {
         // This would normally use a DNS library or external tool
         // For now, we'll simulate some basic records
         
@@ -456,7 +358,7 @@ impl WhoisOsintSource {
         })
     }
     
-    async fn query_whois(&self, domain: &str) -> Result<WhoisData> {
+    async fn query_whois(&self, _domain: &str) -> Result<WhoisData> {
         // This would normally use a WHOIS library or external tool
         // For now, we'll simulate basic WHOIS data
         

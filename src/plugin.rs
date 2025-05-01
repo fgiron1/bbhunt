@@ -204,14 +204,17 @@ impl PluginManager {
                     // Execute the task
                     let result = match self_clone.run_plugin(&task.plugin, &task.target, task.options).await {
                         Ok(plugin_result) => {
+                            // Store the execution_time before moving plugin_result
+                            let execution_time = plugin_result.execution_time;
+                            
                             TaskResult {
                                 task_id: task.id.clone(),
                                 plugin: task.plugin.clone(),
                                 target: task.target.clone(),
                                 status: TaskStatus::Completed,
-                                result: Some(plugin_result),
+                                result: Some(plugin_result), // plugin_result moved here
                                 error: None,
-                                execution_time: plugin_result.execution_time,
+                                execution_time, // Use the stored value
                             }
                         },
                         Err(e) => {

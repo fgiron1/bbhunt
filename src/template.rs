@@ -64,7 +64,7 @@ impl TemplateEngine {
                     let content = fs::read_to_string(&path).await
                         .context(format!("Failed to read template file: {}", path.display()))?;
                         
-                    self.templates.insert(template_name, content);
+                    self.templates.insert(template_name.clone(), content);
                     found_templates = true;
                     debug!("Loaded template: {}", template_name);
                 }

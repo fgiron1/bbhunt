@@ -62,7 +62,8 @@ impl ReportManager {
         output_dir: Option<&Path>,
         title: Option<&str>,
     ) -> Result<Vec<PathBuf>> {
-        let report_title = title.unwrap_or(&format!("Security Scan Report for {}", target.name));
+        let report_title_str = format!("Security Scan Report for {}", target.name);
+        let report_title = title.unwrap_or(&report_title_str);
         let report_id = Uuid::new_v4().to_string();
         
         // Create report structure

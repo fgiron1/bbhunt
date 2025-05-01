@@ -2,7 +2,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, Context};
-use tracing::{info, debug, error};
+use tracing::info;
 
 use crate::config::AppConfig;
 use crate::plugin::PluginManager;
@@ -136,7 +136,7 @@ impl App {
                 
                 if !target.subdomains.is_empty() {
                     println!("Subdomains ({})", target.subdomains.len());
-                    for (i, subdomain) in target.subdomains.iter().enumerate().take(10) {
+                    for (_, subdomain) in target.subdomains.iter().enumerate().take(10) {
                         println!("  - {}", subdomain);
                     }
                     
@@ -155,7 +155,7 @@ impl App {
                 // Show OSINT data if available
                 if !target.osint_data.discovered_subdomains.is_empty() {
                     println!("\nOSINT Discovered Subdomains ({})", target.osint_data.discovered_subdomains.len());
-                    for (i, subdomain) in target.osint_data.discovered_subdomains.iter().enumerate().take(10) {
+                    for (_, subdomain) in target.osint_data.discovered_subdomains.iter().enumerate().take(10) {
                         println!("  - {}", subdomain);
                     }
                     

@@ -212,7 +212,7 @@ impl TargetManager {
     }
     
     /// Save a target to disk
-    async fn save_target(&self, target: &TargetData) -> Result<()> {
+    pub async fn save_target(&self, target: &TargetData) -> Result<()> {
         let data_dir = self.config.data_dir().await;
         let targets_dir = data_dir.join("targets");
         let target_file = targets_dir.join(format!("{}.json", target.id));

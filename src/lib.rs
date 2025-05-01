@@ -4,3 +4,4 @@ pub mod target;
 pub mod report;
 pub mod template;
 pub mod app;
+pub mod osint;

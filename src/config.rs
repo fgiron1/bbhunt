@@ -237,7 +237,8 @@ impl AppConfig {
     /// Save the current configuration to a file
     pub async fn save(&self, path: Option<&Path>) -> Result<PathBuf> {
         let config = self.inner.lock().await;
-        let path = path.unwrap_or_else(|| &Self::get_default_config_path());
+        let default_path = Self::get_default_config_path();
+        let path = path.unwrap_or(&default_path);
         
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
