@@ -15,7 +15,6 @@ mod template;
 mod osint;
 mod app;
 mod scope_filter;
-mod config_path;
 
 use config::AppConfig;
 use app::{App, Command, TargetCommand, ScanCommand, ReportCommand, PluginCommand, 

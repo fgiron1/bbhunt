@@ -63,11 +63,6 @@ impl ProfileManager {
         Ok(())
     }
     
-    /// List all available profiles
-    pub async fn list_available_profiles(&self) -> Result<Vec<String>> {
-        config_path::list_available_profiles().await
-    }
-    
     /// Initialize default profiles
     pub async fn init_default_profiles(&self) -> Result<()> {
         // Ensure the profiles directory exists

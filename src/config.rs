@@ -125,6 +125,8 @@ impl Default for TargetConfig {
 pub struct AppConfig {
     inner: Arc<Mutex<Config>>,
     profile_manager: Arc<ProfileManager>,
+    // Track the config file path
+    config_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl AppConfig {
@@ -135,37 +137,37 @@ impl AppConfig {
         Self {
             inner: Arc::new(Mutex::new(Config::default())),
             profile_manager,
+            config_path: Arc::new(Mutex::new(None)),
         }
     }
     
     /// Load configuration from file or use defaults
     pub async fn load(&self, config_path: Option<&Path>) -> Result<()> {
-        let mut config = if let Some(path) = config_path {
-            if path.exists() {
-                debug!("Loading config from: {}", path.display());
-                let content = fs::read_to_string(path)
-                    .context(format!("Failed to read config file: {}", path.display()))?;
-                
-                toml::from_str(&content)
-                    .context(format!("Failed to parse config file: {}", path.display()))?
-            } else {
-                warn!("Config file not found: {}", path.display());
-                Config::default()
-            }
+        // Determine config path
+        let config_file_path = if let Some(path) = config_path {
+            path.to_path_buf()
         } else {
             // Try to load from default location
-            let default_path = Self::get_default_config_path();
-            if default_path.exists() {
-                debug!("Loading config from default path: {}", default_path.display());
-                let content = fs::read_to_string(&default_path)
-                    .context(format!("Failed to read config file: {}", default_path.display()))?;
-                
-                toml::from_str(&content)
-                    .context(format!("Failed to parse config file: {}", default_path.display()))?
-            } else {
-                debug!("No config file found, using defaults");
-                Config::default()
-            }
+            Self::get_default_config_path()
+        };
+        
+        // Store the config path for later use
+        let mut path_storage = self.config_path.lock().await;
+        *path_storage = Some(config_file_path.clone());
+        drop(path_storage);
+        
+        // Load config from file if it exists
+        let mut config = if config_file_path.exists() {
+            debug!("Loading config from: {}", config_file_path.display());
+            let content = fs::read_to_string(&config_file_path)
+                .context(format!("Failed to read config file: {}", config_file_path.display()))?;
+            
+            toml::from_str(&content)
+                .context(format!("Failed to parse config file: {}", config_file_path.display()))?
+        } else {
+            // Use default config
+            debug!("Config file not found, using defaults");
+            Config::default()
         };
         
         // Merge with environment variables
@@ -195,27 +197,108 @@ impl AppConfig {
     
     /// Apply environment variables to override configuration
     fn apply_environment_vars(&self, config: &mut Config) {
-        // Example environment variable processing:
-        // BBHUNT_GLOBAL_DATA_DIR -> config.global.data_dir
+        // Load environment variables with a consistent prefix
+        const ENV_PREFIX: &str = "BBHUNT_";
         
-        if let Ok(data_dir) = std::env::var("BBHUNT_GLOBAL_DATA_DIR") {
-            config.global.data_dir = PathBuf::from(data_dir);
-            debug!("Set data_dir from environment: {:?}", config.global.data_dir);
-        }
-        
-        if let Ok(config_dir) = std::env::var("BBHUNT_GLOBAL_CONFIG_DIR") {
-            config.global.config_dir = PathBuf::from(config_dir);
-            debug!("Set config_dir from environment: {:?}", config.global.config_dir);
-        }
-        
-        if let Ok(user_agent) = std::env::var("BBHUNT_GLOBAL_USER_AGENT") {
-            config.global.user_agent = user_agent;
-            debug!("Set user_agent from environment: {}", config.global.user_agent);
-        }
-        
-        if let Ok(profile) = std::env::var("BBHUNT_GLOBAL_PROFILE") {
-            config.global.default_profile = profile;
-            debug!("Set default_profile from environment: {}", config.global.default_profile);
+        for (key, value) in std::env::vars() {
+            if key.starts_with(ENV_PREFIX) {
+                // Remove prefix
+                let config_key = key.strip_prefix(ENV_PREFIX).unwrap();
+                
+                // Handle nested configuration keys (using _ as separator)
+                let parts: Vec<&str> = config_key.split('_').collect();
+                
+                match parts.as_slice() {
+                    // Global config settings
+                    ["GLOBAL", "DATA_DIR"] => {
+                        config.global.data_dir = PathBuf::from(value);
+                        debug!("Set data_dir from environment: {:?}", config.global.data_dir);
+                    },
+                    ["GLOBAL", "CONFIG_DIR"] => {
+                        config.global.config_dir = PathBuf::from(value);
+                        debug!("Set config_dir from environment: {:?}", config.global.config_dir);
+                    },
+                    ["GLOBAL", "USER_AGENT"] => {
+                        config.global.user_agent = value;
+                        debug!("Set user_agent from environment: {}", config.global.user_agent);
+                    },
+                    ["GLOBAL", "PROFILE"] => {
+                        config.global.default_profile = value;
+                        debug!("Set default_profile from environment: {}", config.global.default_profile);
+                    },
+                    ["GLOBAL", "MAX_MEMORY"] => {
+                        if let Ok(mem) = value.parse::<usize>() {
+                            config.global.max_memory = mem;
+                            debug!("Set max_memory from environment: {}", config.global.max_memory);
+                        }
+                    },
+                    ["GLOBAL", "MAX_CPU"] => {
+                        if let Ok(cpu) = value.parse::<usize>() {
+                            config.global.max_cpu = cpu;
+                            debug!("Set max_cpu from environment: {}", config.global.max_cpu);
+                        }
+                    },
+                    
+                    // Plugin-specific settings
+                    ["PLUGIN", plugin_name, option_name] => {
+                        let plugin = config.plugins.entry(plugin_name.to_string())
+                            .or_insert_with(PluginConfig::default);
+                        
+                        match *option_name {
+                            "ENABLED" => {
+                                if let Ok(enabled) = value.parse::<bool>() {
+                                    plugin.enabled = enabled;
+                                    debug!("Set plugin.{}.enabled from environment: {}", plugin_name, enabled);
+                                }
+                            },
+                            "WORDLIST" => {
+                                plugin.wordlist = Some(value.clone());
+                                debug!("Set plugin.{}.wordlist from environment: {}", plugin_name, value);
+                            },
+                            _ => {
+                                // Generic option handling
+                                let json_value = serde_json::Value::String(value.clone());
+                                plugin.options.insert(option_name.to_lowercase(), json_value);
+                                debug!("Set plugin.{}.options.{} from environment", plugin_name, option_name);
+                            },
+                        }
+                    },
+                    
+                    // Tool-specific settings
+                    ["TOOL", tool_name, option_name] => {
+                        let tool = config.tools.entry(tool_name.to_string())
+                            .or_insert_with(ToolConfig::default);
+                        
+                        match *option_name {
+                            "PATH" => {
+                                tool.path = PathBuf::from(value.clone());
+                                debug!("Set tool.{}.path from environment: {}", tool_name, value);
+                            },
+                            "CONFIG_FILE" => {
+                                tool.path = PathBuf::from(value.clone());
+                                debug!("Set tool.{}.path from environment: {}", tool_name, value);
+                            },
+                            _ => {
+                                // Generic option handling
+                                let json_value = serde_json::Value::String(value.clone());
+                                tool.options.insert(option_name.to_lowercase(), json_value);
+                                debug!("Set tool.{}.options.{} from environment", tool_name, option_name);
+                            },
+                        }
+                    },
+                    
+                    // Worker-specific settings
+                    ["WORKER_TYPE"] => {
+                        debug!("Set worker_type from environment: {}", value);
+                        // This would be used for distributed execution
+                    },
+                    
+                    // Unhandled keys
+                    _ => {
+                        debug!("Unhandled environment variable: {}={}", key, value);
+                    },
+                }
+            }
         }
     }
     
@@ -229,24 +312,33 @@ impl AppConfig {
     /// Save the current configuration to a file
     pub async fn save(&self, path: Option<&Path>) -> Result<PathBuf> {
         let config = self.inner.lock().await;
-        let default_path = Self::get_default_config_path();
-        let path = path.unwrap_or(&default_path);
+        
+        // Determine save path
+        let save_path = if let Some(p) = path {
+            p.to_path_buf()
+        } else {
+            // Use the path from load() or default
+            let path_storage = self.config_path.lock().await;
+            path_storage.clone().unwrap_or_else(|| Self::get_default_config_path())
+        };
         
         // Create parent directories if they don't exist
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .context(format!("Failed to create directory: {}", parent.display()))?;
+        if let Some(parent) = save_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent)
+                    .context(format!("Failed to create directory: {}", parent.display()))?;
+            }
         }
         
         // Serialize and save
         let content = toml::to_string_pretty(&*config)
             .context("Failed to serialize configuration")?;
         
-        fs::write(path, content)
-            .context(format!("Failed to write config to {}", path.display()))?;
+        fs::write(&save_path, content)
+            .context(format!("Failed to write config to {}", save_path.display()))?;
         
-        info!("Configuration saved to {}", path.display());
-        Ok(path.to_path_buf())
+        info!("Configuration saved to {}", save_path.display());
+        Ok(save_path)
     }
     
     /// Initialize required directories
@@ -281,7 +373,7 @@ impl AppConfig {
         }
         
         // Create profiles directory
-        let profiles_dir = PathBuf::from("./profiles");
+        let profiles_dir = config.global.config_dir.join("profiles");
         if !profiles_dir.exists() {
             debug!("Creating profiles directory: {}", profiles_dir.display());
             fs::create_dir_all(&profiles_dir)
@@ -289,7 +381,7 @@ impl AppConfig {
         }
         
         // Create templates directory
-        let templates_dir = PathBuf::from("./templates");
+        let templates_dir = config.global.config_dir.join("templates");
         if !templates_dir.exists() {
             debug!("Creating templates directory: {}", templates_dir.display());
             fs::create_dir_all(&templates_dir)
@@ -396,131 +488,4 @@ impl Default for Config {
             targets: HashMap::new(),
         }
     }
-}
-
-/// Get the base directory of the application
-pub fn get_base_dir() -> PathBuf {
-    // Get the current executable path
-    if let Ok(exe_path) = std::env::current_exe() {
-        // Navigate up to find the base directory
-        if let Some(parent) = exe_path.parent() {
-            if let Some(grandparent) = parent.parent() {
-                return grandparent.to_path_buf();
-            }
-            return parent.to_path_buf();
-        }
-    }
-    
-    // Fallback to current directory
-    match std::env::current_dir() {
-        Ok(current_dir) => current_dir,
-        Err(_) => PathBuf::from("."),
-    }
-}
-
-/// Get the profiles directory (./profiles)
-pub fn get_profiles_dir() -> PathBuf {
-    let mut base_dir = get_base_dir();
-    base_dir.push("profiles");
-    base_dir
-}
-
-/// Get the templates directory (./templates)
-pub fn get_templates_dir() -> PathBuf {
-    let mut base_dir = get_base_dir();
-    base_dir.push("templates");
-    base_dir
-}
-
-/// Get the path to a specific profile file
-pub fn get_profile_path(profile_name: &str) -> PathBuf {
-    let mut profiles_dir = get_profiles_dir();
-    profiles_dir.push(format!("{}.toml", profile_name));
-    profiles_dir
-}
-
-/// Get the path to a specific template file
-pub fn get_template_path(template_name: &str) -> PathBuf {
-    let mut templates_dir = get_templates_dir();
-    templates_dir.push(template_name);
-    templates_dir
-}
-
-/// Ensure all required directories exist
-pub async fn ensure_directories_exist() -> Result<()> {
-    // Create profiles directory if it doesn't exist
-    let profiles_dir = get_profiles_dir();
-    if !profiles_dir.exists() {
-        tokio::fs::create_dir_all(&profiles_dir).await
-            .context(format!("Failed to create profiles directory: {}", profiles_dir.display()))?;
-    }
-    
-    // Create templates directory if it doesn't exist
-    let templates_dir = get_templates_dir();
-    if !templates_dir.exists() {
-        tokio::fs::create_dir_all(&templates_dir).await
-            .context(format!("Failed to create templates directory: {}", templates_dir.display()))?;
-    }
-    
-    Ok(())
-}
-
-/// List available profiles
-pub async fn list_available_profiles() -> Result<Vec<String>> {
-    let profiles_dir = get_profiles_dir();
-    
-    if !profiles_dir.exists() {
-        return Ok(Vec::new());
-    }
-    
-    let mut profiles = Vec::new();
-    let mut entries = tokio::fs::read_dir(&profiles_dir).await
-        .context(format!("Failed to read profiles directory: {}", profiles_dir.display()))?;
-    
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        
-        if path.is_file() && path.extension().map_or(false, |ext| ext == "toml") {
-            if let Some(stem) = path.file_stem() {
-                if let Some(name) = stem.to_str() {
-                    profiles.push(name.to_string());
-                }
-            }
-        }
-    }
-    
-    Ok(profiles)
-}
-
-/// Read a profile file
-pub async fn read_profile_file(profile_name: &str) -> Result<String> {
-    let profile_path = get_profile_path(profile_name);
-    
-    if !profile_path.exists() {
-        anyhow::bail!("Profile file not found: {}", profile_path.display());
-    }
-    
-    tokio::fs::read_to_string(&profile_path).await
-        .context(format!("Failed to read profile file: {}", profile_path.display()))
-}
-
-/// Write a profile file
-pub async fn write_profile_file(profile_name: &str, content: &str) -> Result<()> {
-    let profile_path = get_profile_path(profile_name);
-    
-    // Create parent directories if needed
-    if let Some(parent) = profile_path.parent() {
-        if !parent.exists() {
-            tokio::fs::create_dir_all(parent).await
-                .context(format!("Failed to create directory: {}", parent.display()))?;
-        }
-    }
-    
-    tokio::fs::write(&profile_path, content).await
-        .context(format!("Failed to write profile file: {}", profile_path.display()))
-}
-
-/// Check if a profile exists
-pub async fn profile_exists(profile_name: &str) -> bool {
-    get_profile_path(profile_name).exists()
 }

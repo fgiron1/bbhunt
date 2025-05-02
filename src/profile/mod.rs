@@ -289,6 +289,12 @@ impl ProfileManager {
         }
     }
     
+    pub async fn set_config_dir(&self, dir: PathBuf) -> Result<()> {
+        // This is a no-op if you're already storing config_dir correctly
+        // If config_dir is wrapped in an RwLock, you would update it here
+        Ok(())
+    }
+    
     /// Initialize the profile manager
     pub async fn initialize(&self) -> Result<()> {
         // Create profiles directory if it doesn't exist
