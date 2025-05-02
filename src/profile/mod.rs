@@ -662,7 +662,7 @@ impl ProfileApplicable for ProfiledCommand {
         for (key, value) in &tool_profile.options {
             self.args.push(format!("--{}", key));
             
-            if !value.is_null() && !value.is_bool() {
+            if !value.is_null() && !value.is_boolean() {
                 self.args.push(value.to_string());
             }
         }

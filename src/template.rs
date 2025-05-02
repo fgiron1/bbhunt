@@ -12,18 +12,8 @@ pub struct TemplateEngine {
 }
 
 impl TemplateEngine {
-    /// Create a new template engine
-    pub fn new() -> Self {
-        // Use templates from ./templates directory (sibling of ./src)
-        let template_dir = PathBuf::from("./templates");
-        Self {
-            templates: HashMap::new(),
-            template_dir,
-        }
-    }
-    
-    /// Create with explicit template directory
-    pub fn with_template_dir(template_dir: PathBuf) -> Self {
+    /// Create a new template engine with specified template directory
+    pub fn new(template_dir: PathBuf) -> Self {
         Self {
             templates: HashMap::new(),
             template_dir,

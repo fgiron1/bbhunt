@@ -5,7 +5,7 @@ use anyhow::{Result, Context, bail};
 use tracing::{info, debug, error};
 
 use crate::config::AppConfig;
-use crate::plugin::{PluginManager, ProfileAwarePluginManager};
+use crate::plugin::{PluginManager};
 use crate::target::TargetManager;
 use crate::report::ReportManager;
 use crate::osint::OsintCollector;

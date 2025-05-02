@@ -5,3 +5,6 @@ pub mod report;
 pub mod template;
 pub mod app;
 pub mod osint;
+pub mod profile;
+pub mod scope_filter;
+pub mod config_path; 
