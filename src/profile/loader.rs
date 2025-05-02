@@ -97,6 +97,97 @@ impl ProfileManager {
         info!("Created default profiles");
         Ok(())
     }
+
+    pub async fn list_available_profiles(&self) -> Result<Vec<String>> {
+        Ok(self.list_profiles().await)
+    }
+    
+    // Renamed method to match what's called in app.rs
+    pub async fn get_active_profile_name(&self) -> Result<String> {
+        let active_profile = self.get_active_profile().await?;
+        Ok(active_profile.name)
+    }
+    
+    // Add method to delete a profile
+    pub async fn delete_profile(&self, name: &str) -> Result<()> {
+        // First check if this is the active profile
+        let active_profile = self.get_active_profile().await?;
+        if active_profile.name == name {
+            bail!("Cannot delete the active profile. Set another profile as active first.");
+        }
+        
+        // Get the profile path
+        let profile_path = self.config_dir.join("profiles").join(format!("{}.json", name));
+        
+        if !profile_path.exists() {
+            bail!("Profile file not found: {}", profile_path.display());
+        }
+        
+        // Delete the file
+        fs::remove_file(&profile_path).await
+            .context(format!("Failed to delete profile file: {}", profile_path.display()))?;
+        
+        // Remove from in-memory cache
+        let mut profiles = self.profiles.write().await;
+        profiles.remove(name);
+        
+        info!("Profile '{}' deleted successfully", name);
+        Ok(())
+    }
+    
+    // Add method to import a profile from a file
+    pub async fn import_profile_from_file(&self, path: &Path) -> Result<()> {
+        // Read profile file
+        let content = fs::read_to_string(path).await
+            .context(format!("Failed to read profile file: {}", path.display()))?;
+        
+        // Parse profile based on file extension
+        let profile: Profile = if path.extension().map_or(false, |ext| ext == "json") {
+            serde_json::from_str(&content)
+                .context(format!("Failed to parse JSON profile: {}", path.display()))?
+        } else if path.extension().map_or(false, |ext| ext == "toml") {
+            toml::from_str(&content)
+                .context(format!("Failed to parse TOML profile: {}", path.display()))?
+        } else {
+            bail!("Unsupported profile file format. Use .json or .toml");
+        };
+        
+        // Save the profile
+        self.save_profile(&profile).await?;
+        
+        info!("Profile '{}' imported successfully", profile.name);
+        Ok(())
+    }
+    
+    // Add method to export a profile to a file
+    pub async fn export_profile_to_file(&self, name: &str, path: &Path, format: &str) -> Result<()> {
+        // Get the profile
+        let profile = self.get_profile(name).await?;
+        
+        // Serialize profile based on format
+        let content = match format {
+            "json" => serde_json::to_string_pretty(&profile)
+                .context("Failed to serialize profile to JSON")?,
+            "toml" => toml::to_string(&profile)
+                .context("Failed to serialize profile to TOML")?,
+            _ => bail!("Unsupported format: {}. Use 'json' or 'toml'", format),
+        };
+        
+        // Create parent directories if needed
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent).await
+                    .context(format!("Failed to create directory: {}", parent.display()))?;
+            }
+        }
+        
+        // Write to file
+        fs::write(path, content).await
+            .context(format!("Failed to write profile to {}", path.display()))?;
+        
+        info!("Profile '{}' exported to {}", name, path.display());
+        Ok(())
+    }
 }
 
 impl Profile {
@@ -156,5 +247,24 @@ impl Profile {
         profile.resource_limits.risk_level = "low".to_string();
         
         profile
+    }
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            name: "default".to_string(),
+            description: Some("Default profile with standard settings".to_string()),
+            tags: vec!["default".to_string()],
+            resource_limits: Default::default(),
+            scope: Default::default(),
+            tools: HashMap::new(),
+            http: Default::default(),
+            authentication: HashMap::new(),
+            environment: HashMap::new(),
+            default_options: HashMap::new(),
+            enabled: true,
+            program_configs: HashMap::new(),
+        }
     }
 }

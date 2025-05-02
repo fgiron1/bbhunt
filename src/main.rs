@@ -341,7 +341,7 @@ async fn main() -> Result<()> {
                     println!("Configuration initialized at {}", config_path.display());
                     
                     // Initialize profile system
-                    app.profile_manager().init_default_profiles().await?;
+                    app.profile_manager().initialize().await?;
                     
                     println!("Profile system initialized");
                     

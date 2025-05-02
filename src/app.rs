@@ -2,10 +2,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, Context, bail};
-use tracing::{info, debug, error};
+use tracing::info;
 
 use crate::config::AppConfig;
-use crate::plugin::{PluginManager};
+use crate::plugin::PluginManager;
 use crate::target::TargetManager;
 use crate::report::ReportManager;
 use crate::osint::OsintCollector;
@@ -39,6 +39,24 @@ impl App {
             initialized: false,
         }
     }
+
+    // Required helper function for configuration
+    pub async fn config_dir(&self) -> Result<PathBuf> {
+        Ok(self.config.config_dir().await.clone())
+    }
+    
+    // Required helper function for data directory
+    pub async fn data_dir(&self) -> Result<PathBuf> {
+        Ok(self.config.data_dir().await.clone())
+    }
+    
+    // Required helper function for workflow manager
+    pub fn workflow_manager(&self) -> &Arc<WorkflowManager> {
+        // This is a placeholder - you'll need to add the actual WorkflowManager to your App struct
+        // For now, we just need this to compile
+        panic!("WorkflowManager not implemented yet");
+    }
+    
     
     /// Initialize the application with a specific config file
     pub async fn initialize_with_config(&mut self, config_path: Option<&Path>) -> Result<()> {
@@ -402,15 +420,17 @@ impl App {
     async fn handle_profile_command(&self, command: &ProfileCommand) -> Result<()> {
         match command {
             ProfileCommand::List => {
-                let profiles = self.profile_manager.list_available_profiles().await?;
-                let active_profile = self.profile_manager.get_active_profile_name().await?;
+                // Get a reference to the inner ProfileManager
+                let profile_manager = self.profile_manager.as_ref();
+                let profiles = profile_manager.list_profiles().await;
+                let active_profile = profile_manager.get_active_profile().await?;
                 
                 println!("Available profiles:");
-                for profile_name in profiles {
-                    if profile_name == active_profile {
-                        println!("- {} (active)", profile_name);
+                for profile in profiles {
+                    if profile == active_profile.name {
+                        println!("- {} (active)", profile);
                     } else {
-                        println!("- {}", profile_name);
+                        println!("- {}", profile);
                     }
                 }
                 
@@ -488,29 +508,38 @@ impl App {
                 Ok(())
             },
             ProfileCommand::Delete { name } => {
+                 // Get a reference to the inner ProfileManager
+                let profile_manager = self.profile_manager.as_ref();
+                
                 // Check if this is the active profile
-                let active_name = self.profile_manager.get_active_profile_name().await?;
-                if active_name == *name {
+                let active_profile = profile_manager.get_active_profile().await?;
+                if active_profile.name == *name {
                     bail!("Cannot delete the active profile. Set another profile as active first.");
                 }
                 
                 // Delete the profile
-                self.profile_manager.delete_profile(name).await?;
+                profile_manager.delete_profile(name).await?;
                 
                 println!("Profile '{}' deleted successfully", name);
                 Ok(())
             },
             ProfileCommand::Import { path } => {
+                // Get a reference to the inner ProfileManager
+                let profile_manager = self.profile_manager.as_ref();
+                
                 // Import a profile from a file
-                self.profile_manager.import_profile_from_file(path).await?;
+                profile_manager.import_profile_from_file(path).await?;
                 
                 println!("Profile imported successfully");
                 Ok(())
             },
             ProfileCommand::Export { name, path, format } => {
+                // Get a reference to the inner ProfileManager
+                let profile_manager = self.profile_manager.as_ref();
+                
                 // Export a profile to a file
                 let format_str = format.as_deref().unwrap_or("toml");
-                self.profile_manager.export_profile_to_file(name, path, format_str).await?;
+                profile_manager.export_profile_to_file(name, path, format_str).await?;
                 
                 println!("Profile '{}' exported to {}", name, path.display());
                 Ok(())
@@ -545,7 +574,10 @@ impl App {
                 println!("Filtered to {} in-scope items", in_scope_items.len());
                 
                 // Write output file
-                let output_content = in_scope_items.join("\n");
+                let output_content = in_scope_items.iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<&str>>()
+                    .join("\n");
                 tokio::fs::write(output, output_content).await
                     .context(format!("Failed to write output file: {}", output.display()))?;
                 
@@ -710,4 +742,27 @@ pub enum FilterScopeCommand {
         input: PathBuf,
         output: PathBuf,
     },
+}
+
+pub struct WorkflowManager;
+
+impl WorkflowManager {
+pub async fn list_workflows(&self) -> Result<Vec<Workflow>> {
+    // Placeholder implementation
+    Ok(Vec::new())
+    }
+}
+
+pub struct Workflow {
+    pub name: String,
+    pub description: Option<String>,
+    pub steps: Vec<WorkflowStep>,
+}
+
+pub struct WorkflowStep {
+    pub name: String,
+    pub description: Option<String>,
+    pub tool: String,
+    pub args: Vec<String>,
+    pub depends_on: Vec<String>,
 }

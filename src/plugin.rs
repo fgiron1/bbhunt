@@ -14,19 +14,23 @@ use url::Url;
 
 use crate::config::AppConfig;
 use crate::report::{Severity, Reference, ReferenceType};
+use crate::profile::{Profile, ProfileManager};
+use crate::scope_filter::ScopeFilter;
 
 /// Plugin manager for loading and executing plugins
 #[derive(Clone)]
 pub struct PluginManager {
     config: AppConfig,
+    profile_manager: Arc<ProfileManager>,
     plugins: Arc<tokio::sync::Mutex<HashMap<String, Box<dyn Plugin>>>>,
 }
 
 impl PluginManager {
     /// Create a new plugin manager
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: AppConfig, profile_manager: Arc<ProfileManager>) -> Self {
         Self {
             config,
+            profile_manager,
             plugins: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
@@ -96,6 +100,56 @@ impl PluginManager {
         Ok(result)
     }
     
+    /// Run a plugin with profile-based settings
+    pub async fn run_plugin_with_profile(
+        &self, 
+        plugin_name: &str, 
+        target: &str, 
+        options: Option<HashMap<String, Value>>,
+        profile: Option<&Profile>
+    ) -> Result<PluginResult> {
+        let profile = if let Some(p) = profile {
+            p.clone()
+        } else {
+            self.profile_manager.get_active_profile().await?
+        };
+        
+        // Merge options from profile if available
+        let merged_options = if let Some(mut opts) = options {
+            // If profile has tool-specific options for this plugin, add them
+            if let Some(tool_profile) = profile.tools.get(plugin_name) {
+                for (key, value) in &tool_profile.options {
+                    if !opts.contains_key(key) {
+                        opts.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            
+            // Add profile default options if not already set
+            for (key, value) in &profile.default_options {
+                if !opts.contains_key(key) {
+                    opts.insert(key.clone(), value.clone());
+                }
+            }
+            
+            Some(opts)
+        } else {
+            // If no options provided, use profile options if available
+            if let Some(tool_profile) = profile.tools.get(plugin_name) {
+                if !tool_profile.options.is_empty() {
+                    Some(tool_profile.options.clone())
+                } else {
+                    Some(profile.default_options.clone())
+                }
+            } else {
+                Some(profile.default_options.clone())
+            }
+        };
+        
+        // Run the plugin with merged options
+        self.run_plugin(plugin_name, target, merged_options).await
+    }
+    
     /// Get all available plugins
     pub async fn get_plugins(&self) -> Result<Vec<PluginMetadata>> {
         let plugins = self.plugins.lock().await;
@@ -136,6 +190,25 @@ impl PluginManager {
             .context(format!("Failed to parse tasks JSON from {}", path.display()))?;
             
         Ok(tasks)
+    }
+    
+    /// Load task definitions from a file and filter by scope
+    pub fn load_tasks_with_scope(&self, path: &Path, profile: &Profile) -> Result<Vec<TaskDefinition>> {
+        // Load tasks
+        let tasks = self.load_tasks(path)?;
+        let tasks_len = tasks.len();
+        
+        // Create scope filter from profile
+        let scope_filter = ScopeFilter::new(&profile.scope)?;
+        
+        // Filter tasks by scope
+        let filtered_tasks: Vec<TaskDefinition> = tasks.into_iter()
+        .filter(|task| scope_filter.is_host_in_scope(&task.target))
+        .collect();
+        
+        info!("Loaded {} tasks (filtered from {} by scope)", filtered_tasks.len(), tasks_len);
+        
+        Ok(filtered_tasks)
     }
     
     /// Save task definitions to a file
@@ -261,6 +334,25 @@ impl PluginManager {
         }
         
         Ok(results)
+    }
+    
+    /// Execute tasks with profile-based settings
+    pub async fn execute_tasks_with_profile(
+        &self,
+        tasks: Vec<TaskDefinition>,
+        max_concurrent: usize,
+        profile: &Profile
+    ) -> Result<Vec<TaskResult>> {
+        // Override concurrency with profile setting if not explicitly specified
+        let concurrency = if max_concurrent > 0 {
+            max_concurrent
+        } else {
+            profile.resource_limits.max_concurrent_tasks
+        };
+        
+        // TODO: Apply more profile settings to task execution
+        
+        self.execute_tasks(tasks, concurrency).await
     }
     
     /// Generate tasks from previous results

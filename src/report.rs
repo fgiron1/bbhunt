@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use tracing::{info, error};
 use tokio::fs;
 use uuid::Uuid;
+use crate::profile::Profile;
 
 use crate::config::AppConfig;
 use crate::target::TargetData;
@@ -145,6 +146,33 @@ impl ReportManager {
         }
         
         Ok(output_paths)
+    }
+
+    pub async fn generate_report_with_profile(
+        &self,
+        target: &TargetData,
+        formats: &[String],
+        output_dir: Option<&Path>,
+        title: Option<&str>,
+        profile: &Profile
+    ) -> Result<Vec<PathBuf>> {
+        // Create a report title that includes the profile name
+        let profile_name = &profile.name;
+        let report_title_str = format!("Security Scan Report for {} (Profile: {})", target.name, profile_name);
+        let report_title = title.unwrap_or(&report_title_str);
+        
+        // Get report output directory from profile if not specified
+        let output_dir = if let Some(dir) = output_dir {
+            dir.to_path_buf()
+        } else {
+            self.config.data_dir().await.join("reports")
+        };
+        
+        // Apply other profile settings if needed
+        // For example, we might have custom report templates per profile
+        
+        // Use the existing generate_report method with the enhanced title
+        self.generate_report(target, formats, Some(output_dir.as_path()), Some(report_title)).await
     }
     
     /// Generate a report in a specific format
