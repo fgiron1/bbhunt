@@ -1,0 +1,126 @@
+# Audible bug bounty profile configuration
+# Place this file in ./profiles/audible.toml
+
+[profile]
+name = "audible"
+description = "Profile for Audible bug bounty program"
+tags = ["audible", "amazon", "bug-bounty"]
+enabled = true
+
+# Resource limits
+[profile.resource_limits]
+max_concurrent_tasks = 2
+max_requests_per_second = 5  # Audible limit
+timeout_seconds = 600
+max_memory_mb = 2048
+max_cpu_percent = 50
+scan_mode = "standard"
+risk_level = "medium"
+
+# Scope configuration - central definition of in/out of scope
+[profile.scope]
+include_domains = [
+    "*.audible.*"
+]
+
+exclude_domains = [
+    "help.audible.com",
+    "newsletters.audible.com",
+    "www.audiblecareers.com",
+    "www.audible.com/ep/podcast-development-program",
+    "www.audiblehub.com/submit",
+    "www.audible.ca/blog/en"
+]
+
+exclude_paths = [
+    "/careers",
+    "/jobs",
+    "/podcast-development-program"
+]
+
+follow_out_of_scope_redirects = false
+max_crawl_depth = 3
+
+# Global HTTP settings for all tools
+[profile.http]
+user_agent = "audibleresearcher_yourh1username"
+follow_redirects = true
+max_redirects = 5
+verify_ssl = true
+
+# Global headers for all requests
+[profile.http.headers]
+User-Agent = "audibleresearcher_yourh1username"
+Accept-Language = "en-US,en;q=0.9"
+Accept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+
+# Tool-specific configurations
+[profile.tools.subfinder]
+path = "subfinder"
+args = ["-silent"]
+
+[profile.tools.subfinder.options]
+timeout = 30
+max-time = 10
+rate-limit = 5
+exclude-sources = "virustotal"
+all = true
+
+[profile.tools.nuclei]
+path = "nuclei"
+
+[profile.tools.nuclei.options]
+tags = "cve,oast,injection,sqli,xss,ssrf,idor,redirect"
+exclude-tags = "dos,fuzz,brute-force,misc,default-logins,exposures"
+severity = "critical,high,medium,low"
+rate-limit = 5
+bulk-size = 20
+concurrency = 10
+timeout = 10
+retry-attempts = 1
+silent = true
+stats = true
+update-templates = true
+headless = true
+
+[profile.tools.httpx]
+path = "httpx"
+
+[profile.tools.httpx.options]
+status-code = true
+title = true
+web-server = true
+tech-detect = true
+follow-redirects = true
+threads = 50
+rate-limit = 150
+timeout = 5
+silent = true
+output-format = "json"
+
+[profile.tools.nikto]
+path = "nikto"
+args = ["-Tuning", "123679"]  # Skip DOS tests
+
+[profile.tools.nikto.resource_limits]
+max_concurrent_tasks = 1
+max_requests_per_second = 5
+timeout_seconds = 1800
+
+# Program-specific configuration
+[profile.program_configs.audible]
+name = "Audible Bug Bounty Program"
+rules = """
+1. Do not perform DOS/DDOS attacks
+2. Do not brute force accounts
+3. Stay within scope domains
+4. Max 5 requests per second
+5. Use User-Agent string audibleresearcher_yourh1username
+6. Do not access customer data
+7. Create accounts using your HackerOne email
+"""
+rate_limit = 5
+
+# Program required headers
+[profile.program_configs.audible.required_headers]
+User-Agent = "audibleresearcher_yourh1username"

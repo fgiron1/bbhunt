@@ -1,14 +1,16 @@
-// src/app.rs - Complete implementation with OSINT integration
+// src/app.rs - Complete implementation with profile system integration
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use anyhow::{Result, Context};
-use tracing::info;
+use anyhow::{Result, Context, bail};
+use tracing::{info, debug, error};
 
 use crate::config::AppConfig;
-use crate::plugin::PluginManager;
+use crate::plugin::{PluginManager, ProfileAwarePluginManager};
 use crate::target::TargetManager;
 use crate::report::ReportManager;
 use crate::osint::OsintCollector;
+use crate::profile::{Profile, ProfileManager};
+use crate::scope_filter::ScopeFilter;
 
 /// Main application struct that holds all components and state
 pub struct App {
@@ -17,6 +19,7 @@ pub struct App {
     target_manager: Arc<TargetManager>,
     report_manager: Arc<ReportManager>,
     osint_collector: Arc<OsintCollector>,
+    profile_manager: Arc<ProfileManager>,
     initialized: bool,
 }
 
@@ -24,13 +27,15 @@ impl App {
     /// Create a new application instance
     pub fn new() -> Self {
         let config = AppConfig::new();
+        let profile_manager = config.profile_manager();
         
         Self {
             config: config.clone(),
-            plugin_manager: Arc::new(PluginManager::new(config.clone())),
+            plugin_manager: Arc::new(PluginManager::new(config.clone(), profile_manager.clone())),
             target_manager: Arc::new(TargetManager::new(config.clone())),
             report_manager: Arc::new(ReportManager::new(config.clone())),
             osint_collector: Arc::new(OsintCollector::new(config.clone())),
+            profile_manager,
             initialized: false,
         }
     }
@@ -46,6 +51,8 @@ impl App {
         self.report_manager.initialize().await?;
         // Note: OSINT collector uses lazy initialization
         
+        // Initialize profile manager (already initialized in config.load)
+        
         self.initialized = true;
         info!("Application initialized successfully");
         Ok(())
@@ -57,23 +64,33 @@ impl App {
     }
     
     /// Run a specific command
-    pub async fn run_command(&self, command: &Command) -> Result<()> {
+    pub async fn run_command(&self, command: &Command, profile_name: Option<&str>) -> Result<()> {
         if !self.initialized {
             return Err(anyhow::anyhow!("Application not initialized"));
         }
         
+        // Get profile
+        let profile = if let Some(name) = profile_name {
+            self.config.set_active_profile(name).await?;
+            self.config.get_profile(name).await?
+        } else {
+            self.config.get_active_profile().await?
+        };
+        
         match command {
-            Command::Target(target_cmd) => self.handle_target_command(target_cmd).await,
-            Command::Scan(scan_cmd) => self.handle_scan_command(scan_cmd).await,
-            Command::Report(report_cmd) => self.handle_report_command(report_cmd).await,
-            Command::Plugin(plugin_cmd) => self.handle_plugin_command(plugin_cmd).await,
-            Command::Parallel(parallel_cmd) => self.handle_parallel_command(parallel_cmd).await,
-            Command::Osint(osint_cmd) => self.handle_osint_command(osint_cmd).await,
+            Command::Target(target_cmd) => self.handle_target_command(target_cmd, &profile).await,
+            Command::Scan(scan_cmd) => self.handle_scan_command(scan_cmd, &profile).await,
+            Command::Report(report_cmd) => self.handle_report_command(report_cmd, &profile).await,
+            Command::Plugin(plugin_cmd) => self.handle_plugin_command(plugin_cmd, &profile).await,
+            Command::Parallel(parallel_cmd) => self.handle_parallel_command(parallel_cmd, &profile).await,
+            Command::Osint(osint_cmd) => self.handle_osint_command(osint_cmd, &profile).await,
+            Command::Profile(profile_cmd) => self.handle_profile_command(profile_cmd).await,
+            Command::FilterScope(filter_cmd) => self.handle_filter_scope_command(filter_cmd, &profile).await,
         }
     }
     
     /// Handle target-related commands
-    async fn handle_target_command(&self, command: &TargetCommand) -> Result<()> {
+    async fn handle_target_command(&self, command: &TargetCommand, profile: &Profile) -> Result<()> {
         match command {
             TargetCommand::Add { name, domain, ip, cidr } => {
                 info!("Adding target: {}", name);
@@ -183,7 +200,7 @@ impl App {
     }
     
     /// Handle scan-related commands
-    async fn handle_scan_command(&self, command: &ScanCommand) -> Result<()> {
+    async fn handle_scan_command(&self, command: &ScanCommand, profile: &Profile) -> Result<()> {
         match command {
             ScanCommand::Run { plugin, target, options } => {
                 info!("Running scan with plugin '{}' on target '{}'", plugin, target);
@@ -196,8 +213,8 @@ impl App {
                     None
                 };
                 
-                // Run the plugin
-                let result = self.plugin_manager.run_plugin(plugin, target, parsed_options).await?;
+                // Run the plugin with profile support
+                let result = self.plugin_manager.run_plugin_with_profile(plugin, target, parsed_options, Some(profile)).await?;
                 
                 // Display results
                 println!("Status: {:?}", result.status);
@@ -217,7 +234,7 @@ impl App {
     }
     
     /// Handle report-related commands
-    async fn handle_report_command(&self, command: &ReportCommand) -> Result<()> {
+    async fn handle_report_command(&self, command: &ReportCommand, profile: &Profile) -> Result<()> {
         match command {
             ReportCommand::Generate { target, format, output, title } => {
                 info!("Generating report for target: {}", target);
@@ -225,9 +242,9 @@ impl App {
                 // Get the target data
                 let target_data = self.target_manager.get_target_by_name_or_id(target).await?;
                 
-                // Generate the report
+                // Generate the report using profile settings
                 let report_paths = self.report_manager
-                    .generate_report(&target_data, format, output.as_deref(), title.as_deref())
+                    .generate_report_with_profile(&target_data, format, output.as_deref(), title.as_deref(), profile)
                     .await?;
                 
                 for path in report_paths {
@@ -240,11 +257,11 @@ impl App {
     }
     
     /// Handle plugin-related commands
-    async fn handle_plugin_command(&self, command: &PluginCommand) -> Result<()> {
+    async fn handle_plugin_command(&self, command: &PluginCommand, profile: &Profile) -> Result<()> {
         match command {
             PluginCommand::List { category } => {
                 if let Some(cat_str) = category {
-                    // Filter by category if specified
+                    // Filter by category
                     let plugins = self.plugin_manager.get_plugins_by_category(cat_str).await?;
                     
                     println!("{} plugins in category {}:", plugins.len(), cat_str);
@@ -270,7 +287,7 @@ impl App {
     }
     
     /// Handle OSINT-related commands
-    async fn handle_osint_command(&self, command: &OsintCommand) -> Result<()> {
+    async fn handle_osint_command(&self, command: &OsintCommand, profile: &Profile) -> Result<()> {
         match command {
             OsintCommand::Collect { target, source } => {
                 // Get target
@@ -328,19 +345,21 @@ impl App {
     }
     
     /// Handle parallel execution commands
-    async fn handle_parallel_command(&self, command: &ParallelCommand) -> Result<()> {
+    async fn handle_parallel_command(&self, command: &ParallelCommand, profile: &Profile) -> Result<()> {
         match command {
             ParallelCommand::Run { tasks, output, concurrent } => {
-                info!("Running tasks from {} with concurrency {}", tasks.display(), concurrent);
+                // Override profile's concurrency if provided in command
+                let concurrency = concurrent.unwrap_or(profile.resource_limits.max_concurrent_tasks);
                 
-                // Load tasks
-                let task_definitions = self.plugin_manager.load_tasks(tasks)
-                    .context(format!("Failed to load tasks from {}", tasks.display()))?;
+                info!("Running tasks from {} with concurrency {}", tasks.display(), concurrency);
                 
-                println!("Loaded {} tasks", task_definitions.len());
+                // Load tasks and filter by scope
+                let task_definitions = self.plugin_manager.load_tasks_with_scope(tasks, profile)?;
                 
-                // Execute tasks
-                let results = self.plugin_manager.execute_tasks(task_definitions, *concurrent).await?;
+                println!("Loaded {} tasks (filtered by scope)", task_definitions.len());
+                
+                // Execute tasks with profile settings
+                let results = self.plugin_manager.execute_tasks_with_profile(task_definitions, concurrency, profile).await?;
                 
                 println!("Completed {} tasks", results.len());
                 
@@ -358,12 +377,12 @@ impl App {
             ParallelCommand::GenerateTasks { input, output, r#type, plugins, max_targets, options } => {
                 info!("Generating {} tasks from {}", r#type, input.display());
                 
-                // Generate tasks
+                // Generate tasks (uses profile's scope settings internally)
                 let tasks = self.plugin_manager.generate_tasks(
                     input,
                     r#type,
                     plugins.as_deref(),
-                    *max_targets,
+                    max_targets.unwrap_or(10),
                     options.as_deref(),
                 ).await?;
                 
@@ -373,6 +392,164 @@ impl App {
                 self.plugin_manager.save_tasks(&tasks, output).await?;
                 
                 println!("Tasks saved to {}", output.display());
+                
+                Ok(())
+            }
+        }
+    }
+    
+    /// Handle profile-related commands
+    async fn handle_profile_command(&self, command: &ProfileCommand) -> Result<()> {
+        match command {
+            ProfileCommand::List => {
+                let profiles = self.profile_manager.list_available_profiles().await?;
+                let active_profile = self.profile_manager.get_active_profile_name().await?;
+                
+                println!("Available profiles:");
+                for profile_name in profiles {
+                    if profile_name == active_profile {
+                        println!("- {} (active)", profile_name);
+                    } else {
+                        println!("- {}", profile_name);
+                    }
+                }
+                
+                Ok(())
+            },
+            ProfileCommand::Show { name } => {
+                let profile = self.profile_manager.get_profile(name).await?;
+                
+                println!("Profile: {}", profile.name);
+                if let Some(desc) = &profile.description {
+                    println!("Description: {}", desc);
+                }
+                
+                // Print resource limits
+                println!("\nResource Limits:");
+                println!("  Max Concurrent Tasks: {}", profile.resource_limits.max_concurrent_tasks);
+                println!("  Max Requests Per Second: {}", profile.resource_limits.max_requests_per_second);
+                println!("  Timeout: {} seconds", profile.resource_limits.timeout_seconds);
+                println!("  Scan Mode: {}", profile.resource_limits.scan_mode);
+                println!("  Risk Level: {}", profile.resource_limits.risk_level);
+                
+                // Print scope
+                println!("\nScope:");
+                println!("  Include Domains: {}", profile.scope.include_domains.join(", "));
+                if !profile.scope.exclude_domains.is_empty() {
+                    println!("  Exclude Domains: {}", profile.scope.exclude_domains.join(", "));
+                }
+                if !profile.scope.exclude_paths.is_empty() {
+                    println!("  Exclude Paths: {}", profile.scope.exclude_paths.join(", "));
+                }
+                
+                // Print HTTP settings
+                println!("\nHTTP Settings:");
+                if let Some(ref user_agent) = profile.http.user_agent {
+                    println!("  User Agent: {}", user_agent);
+                }
+                if !profile.http.headers.is_empty() {
+                    println!("  Headers:");
+                    for (name, value) in &profile.http.headers {
+                        println!("    {}: {}", name, value);
+                    }
+                }
+                
+                // Print tools configuration
+                if !profile.tools.is_empty() {
+                    println!("\nTool Configurations:");
+                    for (name, _) in &profile.tools {
+                        println!("  - {}", name);
+                    }
+                }
+                
+                Ok(())
+            },
+            ProfileCommand::Set { name } => {
+                self.profile_manager.set_active_profile(name).await?;
+                println!("Active profile set to: {}", name);
+                Ok(())
+            },
+            ProfileCommand::Create { name, base, description } => {
+                // Create a new profile based on an existing one or default
+                let mut profile = if let Some(base_name) = base {
+                    self.profile_manager.get_profile(base_name).await?
+                } else {
+                    Profile::default()
+                };
+                
+                // Update the name and description
+                profile.name = name.clone();
+                profile.description = description.clone();
+                
+                // Save the profile
+                self.profile_manager.save_profile(&profile).await?;
+                
+                println!("Profile '{}' created successfully", name);
+                Ok(())
+            },
+            ProfileCommand::Delete { name } => {
+                // Check if this is the active profile
+                let active_name = self.profile_manager.get_active_profile_name().await?;
+                if active_name == *name {
+                    bail!("Cannot delete the active profile. Set another profile as active first.");
+                }
+                
+                // Delete the profile
+                self.profile_manager.delete_profile(name).await?;
+                
+                println!("Profile '{}' deleted successfully", name);
+                Ok(())
+            },
+            ProfileCommand::Import { path } => {
+                // Import a profile from a file
+                self.profile_manager.import_profile_from_file(path).await?;
+                
+                println!("Profile imported successfully");
+                Ok(())
+            },
+            ProfileCommand::Export { name, path, format } => {
+                // Export a profile to a file
+                let format_str = format.as_deref().unwrap_or("toml");
+                self.profile_manager.export_profile_to_file(name, path, format_str).await?;
+                
+                println!("Profile '{}' exported to {}", name, path.display());
+                Ok(())
+            },
+        }
+    }
+    
+    /// Handle scope filtering commands
+    async fn handle_filter_scope_command(&self, command: &FilterScopeCommand, profile: &Profile) -> Result<()> {
+        match command {
+            FilterScopeCommand::Filter { input, output } => {
+                info!("Filtering items from {} by scope", input.display());
+                
+                // Create a scope filter from the profile
+                let scope_filter = ScopeFilter::new(&profile.scope)?;
+                
+                // Read input file
+                let content = tokio::fs::read_to_string(input).await
+                    .context(format!("Failed to read input file: {}", input.display()))?;
+                
+                // Parse items
+                let items: Vec<String> = content.lines()
+                    .map(|line| line.trim().to_string())
+                    .filter(|line| !line.is_empty())
+                    .collect();
+                
+                println!("Read {} items from input file", items.len());
+                
+                // Filter items based on scope
+                let in_scope_items = scope_filter.filter_hosts(&items);
+                
+                println!("Filtered to {} in-scope items", in_scope_items.len());
+                
+                // Write output file
+                let output_content = in_scope_items.join("\n");
+                tokio::fs::write(output, output_content).await
+                    .context(format!("Failed to write output file: {}", output.display()))?;
+                
+                println!("In-scope items written to {}", output.display());
                 
                 Ok(())
             }
@@ -403,6 +580,11 @@ impl App {
     pub fn osint_collector(&self) -> &Arc<OsintCollector> {
         &self.osint_collector
     }
+    
+    /// Get a reference to the profile manager
+    pub fn profile_manager(&self) -> &Arc<ProfileManager> {
+        &self.profile_manager
+    }
 }
 
 /// Command enum representing all possible CLI commands
@@ -414,6 +596,8 @@ pub enum Command {
     Plugin(PluginCommand),
     Parallel(ParallelCommand),
     Osint(OsintCommand),
+    Profile(ProfileCommand),
+    FilterScope(FilterScopeCommand),
 }
 
 /// Target management commands
@@ -479,14 +663,51 @@ pub enum ParallelCommand {
     Run {
         tasks: PathBuf,
         output: PathBuf,
-        concurrent: usize,
+        concurrent: Option<usize>,
     },
     GenerateTasks {
         input: PathBuf,
         output: PathBuf,
         r#type: String,
         plugins: Option<String>,
-        max_targets: usize,
+        max_targets: Option<usize>,
         options: Option<String>,
+    },
+}
+
+/// Profile management commands
+#[derive(Debug, Clone)]
+pub enum ProfileCommand {
+    List,
+    Show {
+        name: String,
+    },
+    Set {
+        name: String,
+    },
+    Create {
+        name: String,
+        base: Option<String>,
+        description: Option<String>,
+    },
+    Delete {
+        name: String,
+    },
+    Import {
+        path: PathBuf,
+    },
+    Export {
+        name: String,
+        path: PathBuf,
+        format: Option<String>,
+    },
+}
+
+/// Scope filtering commands
+#[derive(Debug, Clone)]
+pub enum FilterScopeCommand {
+    Filter {
+        input: PathBuf,
+        output: PathBuf,
     },
 }

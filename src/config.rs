@@ -1,4 +1,4 @@
-// src/config.rs
+// src/config.rs - Refactored to use profile system
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,6 +7,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use anyhow::{Result, Context, bail};
 use tracing::{info, debug, warn};
+
+use crate::profile::{Profile, ProfileManager};
 
 /// Central configuration structure for BBHunt
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,10 +24,6 @@ pub struct Config {
     // External tool configurations
     #[serde(default)]
     pub tools: HashMap<String, ToolConfig>,
-    
-    // Scan profiles for different intensity levels
-    #[serde(default)]
-    pub profiles: HashMap<String, ProfileConfig>,
     
     // Target configurations
     #[serde(default)]
@@ -60,7 +58,7 @@ impl Default for GlobalConfig {
             max_memory: 4096, // 4GB
             max_cpu: num_cpus::get(),
             user_agent: format!("bbhunt/{}", env!("CARGO_PKG_VERSION")),
-            default_profile: "standard".to_string(),
+            default_profile: "default".to_string(),
         }
     }
 }
@@ -97,27 +95,6 @@ impl Default for ToolConfig {
     }
 }
 
-/// Profile for different scan intensities
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfileConfig {
-    pub max_concurrent_tasks: usize,
-    pub scan_mode: String,
-    pub risk_level: Option<String>,
-    pub timeout_seconds: Option<u64>,
-}
-
-/// Default implementation for ProfileConfig
-impl Default for ProfileConfig {
-    fn default() -> Self {
-        Self {
-            max_concurrent_tasks: 4,
-            scan_mode: "standard".to_string(),
-            risk_level: Some("medium".to_string()),
-            timeout_seconds: Some(600),
-        }
-    }
-}
-
 /// Target configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetConfig {
@@ -147,13 +124,17 @@ impl Default for TargetConfig {
 #[derive(Clone)]
 pub struct AppConfig {
     inner: Arc<Mutex<Config>>,
+    profile_manager: Arc<ProfileManager>,
 }
 
 impl AppConfig {
     /// Create a new AppConfig instance with default configuration
     pub fn new() -> Self {
+        let profile_manager = Arc::new(ProfileManager::new(PathBuf::from("./profiles")));
+        
         Self {
             inner: Arc::new(Mutex::new(Config::default())),
+            profile_manager,
         }
     }
     
@@ -196,6 +177,18 @@ impl AppConfig {
         
         // Initialize directories
         self.initialize_directories().await?;
+        
+        // Initialize profile system
+        self.profile_manager.initialize().await?;
+        
+        // Set default profile from config
+        let config = self.inner.lock().await;
+        // Only set if the profile exists
+        if let Ok(profiles) = self.profile_manager.list_available_profiles().await {
+            if profiles.contains(&config.global.default_profile) {
+                self.profile_manager.set_active_profile(&config.global.default_profile).await?;
+            }
+        }
         
         info!("Configuration loaded successfully");
         Ok(())
@@ -288,6 +281,22 @@ impl AppConfig {
                 .context(format!("Failed to create reports directory: {}", reports_dir.display()))?;
         }
         
+        // Create profiles directory
+        let profiles_dir = PathBuf::from("./profiles");
+        if !profiles_dir.exists() {
+            debug!("Creating profiles directory: {}", profiles_dir.display());
+            fs::create_dir_all(&profiles_dir)
+                .context(format!("Failed to create profiles directory: {}", profiles_dir.display()))?;
+        }
+        
+        // Create templates directory
+        let templates_dir = PathBuf::from("./templates");
+        if !templates_dir.exists() {
+            debug!("Creating templates directory: {}", templates_dir.display());
+            fs::create_dir_all(&templates_dir)
+                .context(format!("Failed to create templates directory: {}", templates_dir.display()))?;
+        }
+        
         Ok(())
     }
     
@@ -306,15 +315,28 @@ impl AppConfig {
     }
     
     /// Get the active profile
-    pub async fn get_active_profile(&self) -> Result<ProfileConfig> {
-        let config = self.inner.lock().await;
-        let profile_name = &config.global.default_profile;
-        
-        if let Some(profile) = config.profiles.get(profile_name) {
-            Ok(profile.clone())
-        } else {
-            bail!("Profile not found: {}", profile_name)
-        }
+    pub async fn get_active_profile(&self) -> Result<Profile> {
+        self.profile_manager.get_active_profile().await
+    }
+    
+    /// Set the active profile
+    pub async fn set_active_profile(&self, name: &str) -> Result<()> {
+        self.profile_manager.set_active_profile(name).await
+    }
+    
+    /// Get a profile by name
+    pub async fn get_profile(&self, name: &str) -> Result<Profile> {
+        self.profile_manager.get_profile(name).await
+    }
+    
+    /// List available profiles
+    pub async fn list_profiles(&self) -> Result<Vec<String>> {
+        self.profile_manager.list_available_profiles().await
+    }
+    
+    /// Get the profile manager
+    pub fn profile_manager(&self) -> Arc<ProfileManager> {
+        self.profile_manager.clone()
     }
     
     /// Get plugin configuration
@@ -336,32 +358,6 @@ impl AppConfig {
 
 impl Default for Config {
     fn default() -> Self {
-        let quick_profile = ProfileConfig {
-            max_concurrent_tasks: 8,
-            scan_mode: "basic".to_string(),
-            risk_level: Some("low".to_string()),
-            timeout_seconds: Some(300),
-        };
-        
-        let standard_profile = ProfileConfig {
-            max_concurrent_tasks: 4,
-            scan_mode: "standard".to_string(),
-            risk_level: Some("medium".to_string()),
-            timeout_seconds: Some(600),
-        };
-        
-        let thorough_profile = ProfileConfig {
-            max_concurrent_tasks: 2,
-            scan_mode: "thorough".to_string(),
-            risk_level: Some("high".to_string()),
-            timeout_seconds: Some(1800),
-        };
-        
-        let mut profiles = HashMap::new();
-        profiles.insert("quick".to_string(), quick_profile);
-        profiles.insert("standard".to_string(), standard_profile);
-        profiles.insert("thorough".to_string(), thorough_profile);
-        
         // Set up some default plugin configurations
         let mut plugins = HashMap::new();
         
@@ -398,7 +394,6 @@ impl Default for Config {
             global: GlobalConfig::default(),
             plugins,
             tools,
-            profiles,
             targets: HashMap::new(),
         }
     }
