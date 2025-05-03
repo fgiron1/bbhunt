@@ -88,6 +88,7 @@ impl App {
                 //TODO: Apply profile settings to the target creation process
                 // (Check if domains, IPs, or CIDRs are in scope based on the profile)
                 
+                // TODO: It's not clear what to do with the profile here
                 let target_id = match self.target_manager.get_target(&profile.name).await {
                     Ok(target) => {
                         info!("Target already exists: {}", name);
