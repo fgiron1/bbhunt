@@ -1,4 +1,3 @@
-// src/main.rs - Refactored to use the profile system
 use std::path::PathBuf;
 use std::process::exit;
 use anyhow::Result;
@@ -15,8 +14,6 @@ mod template;
 mod osint;
 mod app;
 mod scope_filter;
-
-use config::AppConfig;
 use app::{App, Command, TargetCommand, ScanCommand, ReportCommand, PluginCommand, 
          ParallelCommand, OsintCommand, ProfileCommand, FilterScopeCommand};
 
@@ -39,13 +36,12 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Cli {
-    /// Manage targets for reconnaissance
+
     Target {
         #[command(subcommand)]
         command: TargetCli,
     },
 
-    /// Run a specific plugin
     Run {
         #[arg(help = "Plugin name to run")]
         plugin: String,
@@ -57,7 +53,6 @@ enum Cli {
         options: Option<String>,
     },
     
-    /// Generate reports
     Report {
         #[arg(short, long, help = "Target name")]
         target: String,
@@ -72,19 +67,16 @@ enum Cli {
         title: Option<String>,
     },
 
-    /// List available plugins
     Plugins {
         #[arg(long, help = "Filter by category")]
         category: Option<String>,
     },
     
-    /// OSINT data collection
     Osint {
         #[command(subcommand)]
         command: OsintCli,
     },
 
-    /// Run parallel tasks
     Parallel {
         #[arg(short, long, help = "Path to task definition file")]
         tasks: PathBuf,
@@ -96,7 +88,6 @@ enum Cli {
         concurrent: Option<usize>,
     },
     
-    /// Generate tasks from previous results
     GenerateTasks {
         #[arg(short, long, help = "Input results file")]
         input: PathBuf,
@@ -117,19 +108,16 @@ enum Cli {
         options: Option<String>,
     },
     
-    /// Initialize config
     Init {
         #[arg(short, long, help = "Force overwrite existing configuration")]
         force: bool,
     },
     
-    /// Manage profiles
     Profile {
         #[command(subcommand)]
         command: ProfileCli,
     },
     
-    /// Filter items by scope
     FilterScope {
         #[arg(short, long, help = "Input file with items to filter")]
         input: PathBuf,
@@ -243,22 +231,14 @@ enum ProfileCli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
     tracing_subscriber::fmt::init();
-
-    // Parse command line arguments
     let args = Args::parse();
     
-    // Set log level based on verbosity
     if args.verbose {
-        // This would normally set a more verbose log level
         info!("Verbose mode enabled");
     }
-
-    // Create the application
-    let mut app = App::new();
     
-    // Initialize the application
+    let mut app = App::new();
     match app.initialize_with_config(args.config.as_deref()).await {
         Ok(_) => {
             info!("Application initialized successfully");

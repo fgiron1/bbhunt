@@ -1,3 +1,4 @@
+use std::any::Any;
 // src/app.rs - Complete implementation with profile system integration
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -39,46 +40,17 @@ impl App {
             initialized: false,
         }
     }
+    
 
-    // Required helper function for configuration
-    pub async fn config_dir(&self) -> Result<PathBuf> {
-        Ok(self.config.config_dir().await.clone())
-    }
-    
-    // Required helper function for data directory
-    pub async fn data_dir(&self) -> Result<PathBuf> {
-        Ok(self.config.data_dir().await.clone())
-    }
-    
-    // Required helper function for workflow manager
-    pub fn workflow_manager(&self) -> &Arc<WorkflowManager> {
-        // This is a placeholder - you'll need to add the actual WorkflowManager to your App struct
-        // For now, we just need this to compile
-        panic!("WorkflowManager not implemented yet");
-    }
-    
-    
-    /// Initialize the application with a specific config file
     pub async fn initialize_with_config(&mut self, config_path: Option<&Path>) -> Result<()> {
-        // Load configuration
         self.config.load(config_path).await?;
-        
-        // Initialize all managers
         self.plugin_manager.initialize().await?;
         self.target_manager.initialize().await?;
         self.report_manager.initialize().await?;
         // Note: OSINT collector uses lazy initialization
-        
-        // Initialize profile manager (already initialized in config.load)
-        
         self.initialized = true;
         info!("Application initialized successfully");
         Ok(())
-    }
-    
-    /// Initialize with default configuration
-    pub async fn initialize(&mut self) -> Result<()> {
-        self.initialize_with_config(None).await
     }
     
     /// Run a specific command
@@ -87,11 +59,12 @@ impl App {
             return Err(anyhow::anyhow!("Application not initialized"));
         }
         
-        // Get profile
         let profile = if let Some(name) = profile_name {
             self.config.set_active_profile(name).await?;
             self.config.get_profile(name).await?
         } else {
+            //TODO: There might not be an active profile set, handle this case
+            // Use the default profile if no name is provided
             self.config.get_active_profile().await?
         };
         
@@ -111,9 +84,21 @@ impl App {
     async fn handle_target_command(&self, command: &TargetCommand, profile: &Profile) -> Result<()> {
         match command {
             TargetCommand::Add { name, domain, ip, cidr } => {
-                info!("Adding target: {}", name);
-                let target_id = self.target_manager.create_target(name, None).await?;
+
+                //TODO: Apply profile settings to the target creation process
+                // (Check if domains, IPs, or CIDRs are in scope based on the profile)
                 
+                let target_id = match self.target_manager.get_target(&profile.name).await {
+                    Ok(target) => {
+                        info!("Target already exists: {}", name);
+                        target.id.clone()
+                    },
+                    Err(_) => {
+                        info!("Creating new target: {}", name);
+                        self.target_manager.create_target(name, None).await?
+                    },
+                };
+
                 // Add domains if specified
                 if let Some(domains) = domain {
                     for d in domains {
@@ -742,27 +727,4 @@ pub enum FilterScopeCommand {
         input: PathBuf,
         output: PathBuf,
     },
-}
-
-pub struct WorkflowManager;
-
-impl WorkflowManager {
-pub async fn list_workflows(&self) -> Result<Vec<Workflow>> {
-    // Placeholder implementation
-    Ok(Vec::new())
-    }
-}
-
-pub struct Workflow {
-    pub name: String,
-    pub description: Option<String>,
-    pub steps: Vec<WorkflowStep>,
-}
-
-pub struct WorkflowStep {
-    pub name: String,
-    pub description: Option<String>,
-    pub tool: String,
-    pub args: Vec<String>,
-    pub depends_on: Vec<String>,
 }
