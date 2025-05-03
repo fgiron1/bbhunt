@@ -5,27 +5,23 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use anyhow::{Result, Context, bail};
-use tracing::{info, debug, warn};
+use anyhow::{Result, Context};
+use tracing::{info, debug};
 
 use crate::profile::{Profile, ProfileManager};
 
-/// Central configuration structure for BBHunt
 #[derive(Debug, Clone, Serialize, Deserialize)]
+
 pub struct Config {
-    // Global settings
     #[serde(default)]
     pub global: GlobalConfig,
     
-    // Plugin-specific configurations
     #[serde(default)]
     pub plugins: HashMap<String, PluginConfig>,
     
-    // External tool configurations
     #[serde(default)]
     pub tools: HashMap<String, ToolConfig>,
     
-    // Target configurations
     #[serde(default)]
     pub targets: HashMap<String, TargetConfig>,
 }
@@ -33,7 +29,7 @@ pub struct Config {
 /// Global application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
-    // Directories
+
     pub data_dir: PathBuf,
     pub config_dir: PathBuf,
     
@@ -63,7 +59,6 @@ impl Default for GlobalConfig {
     }
 }
 
-/// Plugin-specific configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginConfig {
     #[serde(default)]
@@ -75,7 +70,6 @@ pub struct PluginConfig {
     pub options: HashMap<String, serde_json::Value>,
 }
 
-/// External tool configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolConfig {
     pub path: PathBuf,
@@ -84,7 +78,6 @@ pub struct ToolConfig {
     pub options: HashMap<String, serde_json::Value>,
 }
 
-/// Default implementation for ToolConfig
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
@@ -95,7 +88,6 @@ impl Default for ToolConfig {
     }
 }
 
-/// Target configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TargetConfig {
     pub domain: String,
@@ -107,7 +99,6 @@ pub struct TargetConfig {
     pub added_at: String,
 }
 
-/// Default implementation for TargetConfig
 impl Default for TargetConfig {
     fn default() -> Self {
         Self {
@@ -120,8 +111,6 @@ impl Default for TargetConfig {
     }
 }
 
-/// Configuration singleton that can be shared across the application
-#[derive(Clone)]
 pub struct AppConfig {
     inner: Arc<Mutex<Config>>,
     profile_manager: Arc<ProfileManager>,
@@ -130,7 +119,6 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    /// Create a new AppConfig instance with default configuration
     pub fn new() -> Self {
         let profile_manager = Arc::new(ProfileManager::new(PathBuf::from("./profiles")));
         
@@ -141,7 +129,6 @@ impl AppConfig {
         }
     }
     
-    /// Load configuration from file or use defaults
     pub async fn load(&self, config_path: Option<&Path>) -> Result<()> {
         // Determine config path
         let config_file_path = if let Some(path) = config_path {
@@ -306,7 +293,7 @@ impl AppConfig {
     pub fn get_default_config_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".bbhunt/config/config.toml")
+            .join(".bbhunt/config/default.toml")
     }
     
     /// Save the current configuration to a file
