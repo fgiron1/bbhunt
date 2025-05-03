@@ -10,19 +10,16 @@ on:
         description: 'Target to scan'
         required: true
         default: 'default-target'
-      concurrency:
-        description: 'Maximum concurrent tasks'
+      profile:
+        description: 'Profile to use (base, safe, audible, custom)'
         required: false
-        default: '4'
-      scan_mode:
-        description: 'Scan mode (basic, standard, thorough)'
-        required: false
-        default: 'standard'
+        default: 'base'
         type: choice
         options:
-          - basic
-          - standard
-          - thorough
+          - base
+          - safe
+          - audible
+          - custom
 
 jobs:
   build:
@@ -59,7 +56,7 @@ jobs:
           name: bbhunt-binary
           path: target/release/bbhunt
 
-  recon:
+  setup:
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -76,42 +73,87 @@ jobs:
       
       - name: Create directories
         run: |
-          mkdir -p ./tasks
-          mkdir -p ./results
-          mkdir -p ./config/plugins
+          mkdir -p ./config/profiles
+          mkdir -p ./config/templates
+          mkdir -p ./data/reports
+          mkdir -p ./data/targets
+      
+      - name: Setup profile
+        run: |
+          PROFILE_NAME="${{ github.event.inputs.profile || 'base' }}"
+          
+          if [ -f "./profiles/$PROFILE_NAME.toml" ]; then
+            cp "./profiles/$PROFILE_NAME.toml" "./config/profiles/"
+            echo "Using profile: $PROFILE_NAME"
+          else
+            echo "Profile $PROFILE_NAME not found, falling back to base"
+            if [ -f "./profiles/base.toml" ]; then
+              cp "./profiles/base.toml" "./config/profiles/"
+            else
+              # Create minimal base profile
+              cat > ./config/profiles/base.toml << EOF
+              [profile]
+              name = "base"
+              description = "Default base profile with standard settings"
+              tags = ["default", "base"]
+              enabled = true
+              EOF
+            fi
+          fi
       
       - name: Setup target
         run: |
-          ./bin/bbhunt target add ${{ github.event.inputs.target || 'default-target' }} --domain ${{ github.event.inputs.target || 'default-target' }}
+          TARGET="${{ github.event.inputs.target || 'default-target' }}"
+          
+          BBHUNT_GLOBAL_CONFIG_DIR="./config" \
+          BBHUNT_GLOBAL_DATA_DIR="./data" \
+          ./bin/bbhunt target add "$TARGET" --domain "$TARGET"
       
-      - name: Create recon tasks
-        run: |
-          cat > ./tasks/recon-tasks.json << EOF
-          [
-            {
-              "id": "subdomain-enum-${{ github.event.inputs.target || 'default-target' }}",
-              "plugin": "subdomain_enum",
-              "target": "${{ github.event.inputs.target || 'default-target' }}",
-              "options": {
-                "passive_only": false
-              },
-              "dependencies": []
-            }
-          ]
-          EOF
+      - name: Caching config and data
+        uses: actions/cache@v3
+        with:
+          path: |
+            ./config
+            ./data
+          key: ${{ runner.os }}-bbhunt-${{ github.run_id }}-setup
+
+  recon:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Download BBHunt binary
+        uses: actions/download-artifact@v3
+        with:
+          name: bbhunt-binary
+          path: ./bin
+      
+      - name: Make binary executable
+        run: chmod +x ./bin/bbhunt
+      
+      - name: Restore cached config and data
+        uses: actions/cache@v3
+        with:
+          path: |
+            ./config
+            ./data
+          key: ${{ runner.os }}-bbhunt-${{ github.run_id }}-setup
       
       - name: Run Reconnaissance
         run: |
-          ./bin/bbhunt parallel \
-            --tasks ./tasks/recon-tasks.json \
-            --output ./results/recon-results.json \
-            --concurrent ${{ github.event.inputs.concurrency || '4' }}
+          BBHUNT_GLOBAL_CONFIG_DIR="./config" \
+          BBHUNT_GLOBAL_DATA_DIR="./data" \
+          BBHUNT_GLOBAL_PROFILE="${{ github.event.inputs.profile || 'base' }}" \
+          ./bin/bbhunt run subdomain_enum "${{ github.event.inputs.target || 'default-target' }}" --profile "${{ github.event.inputs.profile || 'base' }}"
       
-      - name: Upload Recon Results
-        uses: actions/upload-artifact@v3
+      - name: Caching recon results
+        uses: actions/cache@v3
         with:
-          name: recon-results
-          path: ./results/recon-results.json
+          path: |
+            ./config
+            ./data
+          key: ${{ runner.os }}-bbhunt-${{ github.run_id }}-recon
 
   scan:
     needs: recon
@@ -128,39 +170,28 @@ jobs:
       - name: Make binary executable
         run: chmod +x ./bin/bbhunt
       
-      - name: Create directories
-        run: |
-          mkdir -p ./tasks
-          mkdir -p ./results
-          mkdir -p ./config/plugins
-      
-      - name: Download Recon Results
-        uses: actions/download-artifact@v3
+      - name: Restore cached recon results
+        uses: actions/cache@v3
         with:
-          name: recon-results
-          path: ./results
+          path: |
+            ./config
+            ./data
+          key: ${{ runner.os }}-bbhunt-${{ github.run_id }}-recon
       
-      - name: Generate Scan Tasks
+      - name: Run Web Scan
         run: |
-          ./bin/bbhunt generate-tasks \
-            --input ./results/recon-results.json \
-            --output ./tasks/scan-tasks.json \
-            --type scan \
-            --plugins "web_scan" \
-            --options "{\"mode\": \"${{ github.event.inputs.scan_mode || 'standard' }}\"}"
+          BBHUNT_GLOBAL_CONFIG_DIR="./config" \
+          BBHUNT_GLOBAL_DATA_DIR="./data" \
+          BBHUNT_GLOBAL_PROFILE="${{ github.event.inputs.profile || 'base' }}" \
+          ./bin/bbhunt run web_scan "${{ github.event.inputs.target || 'default-target' }}" --profile "${{ github.event.inputs.profile || 'base' }}"
       
-      - name: Run Scans
-        run: |
-          ./bin/bbhunt parallel \
-            --tasks ./tasks/scan-tasks.json \
-            --output ./results/scan-results.json \
-            --concurrent ${{ github.event.inputs.concurrency || '4' }}
-      
-      - name: Upload Scan Results
-        uses: actions/upload-artifact@v3
+      - name: Caching scan results
+        uses: actions/cache@v3
         with:
-          name: scan-results
-          path: ./results/scan-results.json
+          path: |
+            ./config
+            ./data
+          key: ${{ runner.os }}-bbhunt-${{ github.run_id }}-scan
 
   report:
     needs: scan
@@ -177,27 +208,29 @@ jobs:
       - name: Make binary executable
         run: chmod +x ./bin/bbhunt
       
-      - name: Create directories
+      - name: Restore cached scan results
+        uses: actions/cache@v3
+        with:
+          path: |
+            ./config
+            ./data
+          key: ${{ runner.os }}-bbhunt-${{ github.run_id }}-scan
+      
+      - name: Copy template files
         run: |
-          mkdir -p ./reports
-          mkdir -p ./results
-      
-      - name: Download Scan Results
-        uses: actions/download-artifact@v3
-        with:
-          name: scan-results
-          path: ./results
-      
-      - name: Download Recon Results
-        uses: actions/download-artifact@v3
-        with:
-          name: recon-results
-          path: ./results
+          if [ -d "./templates" ]; then
+            mkdir -p ./config/templates
+            cp ./templates/*.html ./config/templates/ 2>/dev/null || true
+            cp ./templates/*.md ./config/templates/ 2>/dev/null || true
+          fi
       
       - name: Generate Reports
         run: |
+          BBHUNT_GLOBAL_CONFIG_DIR="./config" \
+          BBHUNT_GLOBAL_DATA_DIR="./data" \
+          BBHUNT_GLOBAL_PROFILE="${{ github.event.inputs.profile || 'base' }}" \
           ./bin/bbhunt report \
-            --target ${{ github.event.inputs.target || 'default-target' }} \
+            --target "${{ github.event.inputs.target || 'default-target' }}" \
             --format json md html \
             --output ./reports \
             --title "Security Scan Report for ${{ github.event.inputs.target || 'default-target' }}"
@@ -207,32 +240,6 @@ jobs:
         with:
           name: security-reports
           path: ./reports
-      
-      - name: Generate Summary
-        run: |
-          echo "# Security Scan Summary" > $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Target: ${{ github.event.inputs.target || 'default-target' }}" >> $GITHUB_STEP_SUMMARY
-          echo "Scan mode: ${{ github.event.inputs.scan_mode || 'standard' }}" >> $GITHUB_STEP_SUMMARY
-          echo "Completed: $(date)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f "./reports/summary.json" ]; then
-            echo "## Findings" >> $GITHUB_STEP_SUMMARY
-            critical=$(jq '.severity_counts.critical // 0' ./reports/summary.json)
-            high=$(jq '.severity_counts.high // 0' ./reports/summary.json)
-            medium=$(jq '.severity_counts.medium // 0' ./reports/summary.json)
-            low=$(jq '.severity_counts.low // 0' ./reports/summary.json)
-            info=$(jq '.severity_counts.info // 0' ./reports/summary.json)
-            
-            echo "- Critical: $critical" >> $GITHUB_STEP_SUMMARY
-            echo "- High: $high" >> $GITHUB_STEP_SUMMARY
-            echo "- Medium: $medium" >> $GITHUB_STEP_SUMMARY
-            echo "- Low: $low" >> $GITHUB_STEP_SUMMARY
-            echo "- Info: $info" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "No summary data available." >> $GITHUB_STEP_SUMMARY
-          fi
 
   notify:
     needs: report
@@ -245,35 +252,14 @@ jobs:
           name: security-reports
           path: ./reports
       
-      - name: Determine Status
-        id: status
-        run: |
-          if [ -f "./reports/summary.json" ]; then
-            critical=$(jq '.severity_counts.critical // 0' ./reports/summary.json)
-            high=$(jq '.severity_counts.high // 0' ./reports/summary.json)
-            
-            if [ "$critical" -gt 0 ] || [ "$high" -gt 0 ]; then
-              echo "status=critical" >> $GITHUB_OUTPUT
-            else
-              echo "status=normal" >> $GITHUB_OUTPUT
-            fi
-          else
-            echo "status=unknown" >> $GITHUB_OUTPUT
-          fi
-      
-      - name: Send Critical Notification
-        if: steps.status.outputs.status == 'critical'
+      - name: Send Notification
         # This is where you'd integrate with your notification system
-        # Below is a placeholder that sends to a webhook
+        # Below is a placeholder
         run: |
-          curl -X POST -H "Content-Type: application/json" \
-            -d '{"text":"⚠️ SECURITY ALERT: Critical vulnerabilities found in ${{ github.event.inputs.target || 'default-target' }}. Please check the security reports."}' \
-            ${{ secrets.NOTIFICATION_WEBHOOK_URL || 'https://example.com/webhook' }}
-      
-      - name: Send Normal Notification
-        if: steps.status.outputs.status == 'normal'
-        # This is a placeholder for normal status notifications
-        run: |
-          curl -X POST -H "Content-Type: application/json" \
-            -d '{"text":"✅ Security scan completed for ${{ github.event.inputs.target || 'default-target' }}. No critical issues found."}' \
-            ${{ secrets.NOTIFICATION_WEBHOOK_URL || 'https://example.com/webhook' }}
+          if [ -n "${{ secrets.NOTIFICATION_WEBHOOK_URL }}" ]; then
+            curl -X POST -H "Content-Type: application/json" \
+              -d '{"text":"Security scan completed for ${{ github.event.inputs.target || 'default-target' }} (Profile: ${{ github.event.inputs.profile || 'base' }})."}' \
+              ${{ secrets.NOTIFICATION_WEBHOOK_URL }}
+          else
+            echo "No webhook URL configured, skipping notification"
+          fi

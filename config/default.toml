@@ -1,5 +1,3 @@
-# BBHunt default configuration
-
 [global]
 # Default data directory
 data_dir = "~/.bbhunt/data"
@@ -12,50 +10,25 @@ max_cpu = 8
 # Default user agent
 user_agent = "bbhunt/0.1.0"
 # Default profile
-default_profile = "standard"
+default_profile = "base"
+# Profiles directory (relative to config_dir)
+profiles_dir = "profiles"
+# Templates directory (relative to config_dir)
+templates_dir = "templates"
 
-# Plugin configurations
-[plugins.subdomain_enum]
-enabled = true
-tools = ["subfinder", "amass"]
-default_options = { passive_only = false }
-
-[plugins.web_scan]
-enabled = true
-tools = ["nuclei", "nikto"]
-default_options = { mode = "standard" }
-
-# External tool configurations
+# External tool paths (can be overridden by profiles)
 [tools.subfinder]
 path = "subfinder"
-passive_only = false
 
 [tools.amass]
 path = "amass"
-passive_only = false
 
 [tools.nuclei]
 path = "nuclei"
 templates_path = "~/.bbhunt/data/nuclei-templates"
 
+[tools.httpx]
+path = "httpx"
+
 [tools.nikto]
 path = "nikto"
-
-# Scan profiles
-[profiles.quick]
-max_concurrent_tasks = 8
-scan_mode = "basic"
-risk_level = "low"
-timeout_seconds = 300
-
-[profiles.standard]
-max_concurrent_tasks = 4
-scan_mode = "standard"
-risk_level = "medium"
-timeout_seconds = 600
-
-[profiles.thorough]
-max_concurrent_tasks = 2
-scan_mode = "thorough"
-risk_level = "high"
-timeout_seconds = 1800

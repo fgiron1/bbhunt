@@ -1,53 +1,55 @@
-# BBHunt Documentation
+# BBHunt Profile System
 
-## Table of Contents
-1. [Overview](#overview)
-2. [Installation](#installation)
-3. [Architecture](#architecture)
-4. [Configuration](#configuration)
-5. [CLI Usage](#cli-usage)
-6. [Plugins](#plugins)
-7. [Workflows](#workflows)
-8. [Report Generation](#report-generation)
-9. [Docker Integration](#docker-integration)
-10. [CI/CD Integration](#cicd-integration)
-11. [Extending BBHunt](#extending-bbhunt)
-12. [Troubleshooting](#troubleshooting)
+BBHunt now includes a comprehensive profile system that allows you to customize scanning behavior, resource limits, and scope settings without modifying source code or configuration files.
 
-## Overview
+## Profile Locations
 
-BBHunt is a modular, cross-platform bug bounty hunting framework designed to streamline security research and vulnerability assessment. It provides a unified interface for various reconnaissance and scanning tools, manages resources efficiently, and generates comprehensive reports.
+Profiles are stored in TOML format in the following locations:
 
-### Key Features
-- 🚀 Modular Plugin Architecture
-- 🔒 Cross-Platform Support
-- 📊 Comprehensive Scanning Capabilities
-- 🛡️ Resource-Aware Execution
-- 🔍 Advanced Reconnaissance Tools
-- 📑 Flexible Report Generation
-- 🔄 Parallel Task Execution
-- 🌐 CIDR & Scope Management
-- 🐳 Docker Integration
+- **Default location**: `~/.bbhunt/config/profiles/` (locally)
+- **Docker container**: `/config/profiles/` (when using Docker)
+- **Development**: `./profiles/` (in the project directory)
 
-## Installation
+## Available Profiles
 
-### Prerequisites
-- Rust 1.75 or later
-- External tools (optional):
-  - Subfinder
-  - Amass
-  - Nuclei
-  - Nikto
+BBHunt comes with several pre-configured profiles:
 
-### Quick Install
+- **base.toml** - Default profile with standard settings
+- **safe.toml** - Minimal impact profile for sensitive targets
+- **audible.toml** - Profile optimized for Audible bug bounty program
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/bbhunt.git
-cd bbhunt
+## Profile Structure
 
-# Build the project
-cargo build --release
+Each profile consists of several sections:
 
-# Install the binary
-cargo install --path .
+```toml
+[profile]
+name = "base"
+description = "Default base profile with standard settings"
+tags = ["default", "base"]
+enabled = true
+
+[profile.resource_limits]
+max_concurrent_tasks = 4
+max_requests_per_second = 10
+timeout_seconds = 300
+# ... more resource settings
+
+[profile.scope]
+include_domains = []
+exclude_domains = []
+include_ips = []
+exclude_ips = []
+exclude_paths = []
+# ... more scope settings
+
+[profile.http]
+user_agent = "bbhunt/0.1.0"
+# ... more HTTP settings
+
+[profile.tools.TOOL_NAME]
+path = "tool_path"
+args = ["arg1", "arg2"]
+options = { option1 = "value1", option2 = "value2" }
+
+# ... additional tool configurations

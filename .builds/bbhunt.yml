@@ -6,36 +6,78 @@ packages:
   - openssl-dev
   - pkgconfig
   - git
+  - jq
 sources:
   - https://git.sr.ht/~yourusername/bbhunt
 tasks:
   - setup: |
       cd bbhunt
+      # Create necessary directory structure
+      mkdir -p config/profiles config/templates
+      mkdir -p data/reports data/targets
+      
+      # Copy base profile if it doesn't exist
+      if [ -f profiles/base.toml ]; then
+        cp profiles/base.toml config/profiles/
+      else
+        echo "Warning: Base profile not found, will use defaults"
+      fi
+      
+      # Copy templates if they exist
+      if [ -d templates ]; then
+        cp templates/*.html config/templates/ 2>/dev/null || true
+        cp templates/*.md config/templates/ 2>/dev/null || true
+      fi
+      
+      # Build the application
       cargo build --release
+  
   - recon: |
       cd bbhunt
+      # Ensure tasks directory exists
+      mkdir -p tasks results
+      
+      # Run with base profile
+      BBHUNT_GLOBAL_CONFIG_DIR=./config \
+      BBHUNT_GLOBAL_DATA_DIR=./data \
       ./target/release/bbhunt parallel \
         --tasks ./tasks/recon-tasks.json \
         --output ./results/recon-results.json \
-        --concurrent 4
+        --concurrent 4 \
+        --profile base
+  
   - generate-scan-tasks: |
       cd bbhunt
+      # Generate scan tasks from recon results
+      BBHUNT_GLOBAL_CONFIG_DIR=./config \
+      BBHUNT_GLOBAL_DATA_DIR=./data \
       ./target/release/bbhunt generate-tasks \
         --input ./results/recon-results.json \
         --output ./tasks/scan-tasks.json \
-        --type scan
+        --type scan \
+        --profile base
+  
   - scan: |
       cd bbhunt
+      # Run scan tasks
+      BBHUNT_GLOBAL_CONFIG_DIR=./config \
+      BBHUNT_GLOBAL_DATA_DIR=./data \
       ./target/release/bbhunt parallel \
         --tasks ./tasks/scan-tasks.json \
         --output ./results/scan-results.json \
-        --concurrent 2
+        --concurrent 2 \
+        --profile base
+  
   - report: |
       cd bbhunt
+      # Generate reports
+      BBHUNT_GLOBAL_CONFIG_DIR=./config \
+      BBHUNT_GLOBAL_DATA_DIR=./data \
       ./target/release/bbhunt report \
         --target default-target \
         --format json md html \
         --output ./reports \
-        --title "Security Scan Report"
+        --title "Security Scan Report" \
+        --profile base
 artifacts:
   - bbhunt/reports/**

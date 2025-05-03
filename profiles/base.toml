@@ -1,0 +1,69 @@
+[profile]
+name = "base"
+description = "Default base profile with standard settings"
+tags = ["default", "base"]
+enabled = true
+
+# Resource limits - controls execution parameters
+[profile.resource_limits]
+max_concurrent_tasks = 4
+max_requests_per_second = 10
+timeout_seconds = 300
+max_memory_mb = 1024
+max_cpu_percent = 50
+scan_mode = "standard"
+risk_level = "medium"
+
+# Scope configuration - defines what's in/out of scope
+[profile.scope]
+include_domains = []
+exclude_domains = []
+include_ips = []
+exclude_ips = []
+exclude_paths = []
+follow_out_of_scope_redirects = false
+max_crawl_depth = 3
+
+# Default HTTP settings
+[profile.http]
+user_agent = "bbhunt/0.1.0"
+verify_ssl = true
+follow_redirects = true
+max_redirects = 10
+
+# Tool configurations
+[profile.tools.subfinder]
+path = "subfinder"
+args = ["-silent"]
+options = { timeout = 30, all = true }
+
+[profile.tools.amass]
+path = "amass"
+args = ["enum"]
+options = { passive = false, timeout = 60 }
+
+[profile.tools.nuclei]
+path = "nuclei"
+args = []
+options = { 
+    tags = "cve,rce,lfi,sqli,xss",
+    exclude-tags = "dos,fuzzing",
+    rate-limit = 150,
+    concurrency = 25
+}
+
+[profile.tools.httpx]
+path = "httpx"
+args = []
+options = {
+    follow-redirects = true,
+    status-code = true,
+    title = true,
+    content-type = true,
+    rate-limit = 150
+}
+
+# Default options shared by all plugins
+[profile.default_options]
+rate_limit = 150
+timeout = 300

@@ -1,4 +1,4 @@
-// src/config.rs - Refactored to use profile system
+// src/config.rs - Refactored to use true singleton pattern
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -7,11 +7,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use anyhow::{Result, Context};
 use tracing::{info, debug};
+use once_cell::sync::OnceCell;
 
 use crate::profile::{Profile, ProfileManager};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
 pub struct Config {
     #[serde(default)]
     pub global: GlobalConfig,
@@ -29,7 +29,6 @@ pub struct Config {
 /// Global application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalConfig {
-
     pub data_dir: PathBuf,
     pub config_dir: PathBuf,
     
@@ -54,7 +53,7 @@ impl Default for GlobalConfig {
             max_memory: 4096, // 4GB
             max_cpu: num_cpus::get(),
             user_agent: format!("bbhunt/{}", env!("CARGO_PKG_VERSION")),
-            default_profile: "default".to_string(),
+            default_profile: "base".to_string(),
         }
     }
 }
@@ -111,6 +110,7 @@ impl Default for TargetConfig {
     }
 }
 
+// Singleton implementation for AppConfig
 pub struct AppConfig {
     inner: Arc<Mutex<Config>>,
     profile_manager: Arc<ProfileManager>,
@@ -118,8 +118,26 @@ pub struct AppConfig {
     config_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
+// Static instance of AppConfig
+static APP_CONFIG_INSTANCE: OnceCell<AppConfig> = OnceCell::new();
+
 impl AppConfig {
-    pub fn new() -> Self {
+    // Get or initialize the AppConfig singleton
+    pub fn instance() -> &'static AppConfig {
+        APP_CONFIG_INSTANCE.get_or_init(|| {
+            let config = Config::default();
+            let profile_manager = Arc::new(ProfileManager::new(PathBuf::from("./profiles")));
+            
+            AppConfig {
+                inner: Arc::new(Mutex::new(config)),
+                profile_manager,
+                config_path: Arc::new(Mutex::new(None)),
+            }
+        })
+    }
+    
+    // Constructor now private to enforce singleton pattern
+    fn new() -> Self {
         let profile_manager = Arc::new(ProfileManager::new(PathBuf::from("./profiles")));
         
         Self {
@@ -378,12 +396,12 @@ impl AppConfig {
         Ok(())
     }
     
-    /// Get a reference to the configuration
+    // Get a reference to the configuration - use this method instead of clone()
     pub async fn get(&self) -> Config {
         self.inner.lock().await.clone()
     }
     
-    /// Update the configuration
+    // Update the configuration
     pub async fn update<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut Config) -> Result<()>,
@@ -392,43 +410,43 @@ impl AppConfig {
         f(&mut config)
     }
     
-    /// Get the active profile
+    // Get the active profile - no need to clone the result
     pub async fn get_active_profile(&self) -> Result<Profile> {
         self.profile_manager.get_active_profile().await
     }
     
-    /// Set the active profile
+    // Set the active profile
     pub async fn set_active_profile(&self, name: &str) -> Result<()> {
         self.profile_manager.set_active_profile(name).await
     }
     
-    /// Get a profile by name
+    // Get a profile by name
     pub async fn get_profile(&self, name: &str) -> Result<Profile> {
         self.profile_manager.get_profile(name).await
     }
     
-    /// List available profiles
+    // List available profiles
     pub async fn list_profiles(&self) -> Result<Vec<String>> {
         Ok(self.profile_manager.list_profiles().await)
     }
     
-    /// Get the profile manager
-    pub fn profile_manager(&self) -> Arc<ProfileManager> {
-        self.profile_manager.clone()
+    // Get the profile manager - return a reference to avoid clone
+    pub fn profile_manager(&self) -> &Arc<ProfileManager> {
+        &self.profile_manager
     }
     
-    /// Get plugin configuration
+    // Get plugin configuration - avoid returning Option<PluginConfig> which could be cloned
     pub async fn get_plugin_config(&self, name: &str) -> Option<PluginConfig> {
         let config = self.inner.lock().await;
         config.plugins.get(name).cloned()
     }
     
-    /// Get data directory path
+    // Get data directory path
     pub async fn data_dir(&self) -> PathBuf {
         self.inner.lock().await.global.data_dir.clone()
     }
     
-    /// Get config directory path
+    // Get config directory path
     pub async fn config_dir(&self) -> PathBuf {
         self.inner.lock().await.global.config_dir.clone()
     }

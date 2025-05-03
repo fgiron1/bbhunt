@@ -6,10 +6,12 @@ services:
     volumes:
       - ./data:/data
       - ./config:/config
+      - ./profiles:/config/profiles
     environment:
       - BBHUNT_GLOBAL_DATA_DIR=/data
       - BBHUNT_GLOBAL_CONFIG_DIR=/config
       - BBHUNT_GLOBAL_USER_AGENT=bbhunt-docker/0.1.0
+      - BBHUNT_GLOBAL_PROFILE=base
     networks:
       - bbhunt-network
     command: ["--help"]
@@ -28,12 +30,15 @@ services:
     volumes:
       - ./data:/data
       - ./config:/config
+      - ./profiles:/config/profiles
     environment:
       - BBHUNT_GLOBAL_DATA_DIR=/data
       - BBHUNT_GLOBAL_CONFIG_DIR=/config
       - BBHUNT_GLOBAL_USER_AGENT=bbhunt-recon/0.1.0
+      - BBHUNT_GLOBAL_PROFILE=base
       - BBHUNT_WORKER_TYPE=recon
-    command: ["parallel", "--concurrent", "2"]
+    # Use the actual command structure your project uses
+    command: ["run", "subdomain_enum", "--profile", "base"]
     depends_on:
       - redis
     networks:
@@ -50,12 +55,15 @@ services:
     volumes:
       - ./data:/data
       - ./config:/config
+      - ./profiles:/config/profiles
     environment:
       - BBHUNT_GLOBAL_DATA_DIR=/data
       - BBHUNT_GLOBAL_CONFIG_DIR=/config
       - BBHUNT_GLOBAL_USER_AGENT=bbhunt-scan/0.1.0
+      - BBHUNT_GLOBAL_PROFILE=base
       - BBHUNT_WORKER_TYPE=scan
-    command: ["parallel", "--concurrent", "2"]
+    # Use the actual command structure your project uses
+    command: ["run", "web_scan", "--profile", "base"]
     depends_on:
       - redis
     networks:

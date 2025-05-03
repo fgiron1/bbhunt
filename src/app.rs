@@ -1,5 +1,5 @@
-use std::any::Any;
 // src/app.rs - Complete implementation with profile system integration
+use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, Context, bail};
@@ -15,35 +15,35 @@ use crate::scope_filter::ScopeFilter;
 
 /// Main application struct that holds all components and state
 pub struct App {
-    config: AppConfig,
     plugin_manager: Arc<PluginManager>,
     target_manager: Arc<TargetManager>,
     report_manager: Arc<ReportManager>,
     osint_collector: Arc<OsintCollector>,
-    profile_manager: Arc<ProfileManager>,
     initialized: bool,
 }
 
 impl App {
     /// Create a new application instance
     pub fn new() -> Self {
-        let config = AppConfig::new();
-        let profile_manager = config.profile_manager();
+        // Get the singleton instance of AppConfig
+        let app_config = AppConfig::instance();
+        let profile_manager = app_config.profile_manager().clone();
         
         Self {
-            config: config.clone(),
-            plugin_manager: Arc::new(PluginManager::new(config.clone(), profile_manager.clone())),
-            target_manager: Arc::new(TargetManager::new(config.clone())),
-            report_manager: Arc::new(ReportManager::new(config.clone())),
-            osint_collector: Arc::new(OsintCollector::new(config.clone())),
-            profile_manager,
+            plugin_manager: Arc::new(PluginManager::new(app_config, profile_manager)),
+            target_manager: Arc::new(TargetManager::new(app_config)),
+            report_manager: Arc::new(ReportManager::new(app_config)),
+            osint_collector: Arc::new(OsintCollector::new(app_config)),
             initialized: false,
         }
     }
     
 
     pub async fn initialize_with_config(&mut self, config_path: Option<&Path>) -> Result<()> {
-        self.config.load(config_path).await?;
+        // Initialize the config singleton
+        AppConfig::instance().load(config_path).await?;
+        
+        // Initialize components
         self.plugin_manager.initialize().await?;
         self.target_manager.initialize().await?;
         self.report_manager.initialize().await?;
@@ -60,12 +60,12 @@ impl App {
         }
         
         let profile = if let Some(name) = profile_name {
-            self.config.set_active_profile(name).await?;
-            self.config.get_profile(name).await?
+            AppConfig::instance().set_active_profile(name).await?;
+            AppConfig::instance().get_profile(name).await?
         } else {
             //TODO: There might not be an active profile set, handle this case
             // Use the default profile if no name is provided
-            self.config.get_active_profile().await?
+            AppConfig::instance().get_active_profile().await?
         };
         
         match command {
@@ -407,7 +407,7 @@ impl App {
         match command {
             ProfileCommand::List => {
                 // Get a reference to the inner ProfileManager
-                let profile_manager = self.profile_manager.as_ref();
+                let profile_manager = self.profile_manager();
                 let profiles = profile_manager.list_profiles().await;
                 let active_profile = profile_manager.get_active_profile().await?;
                 
@@ -423,7 +423,7 @@ impl App {
                 Ok(())
             },
             ProfileCommand::Show { name } => {
-                let profile = self.profile_manager.get_profile(name).await?;
+                let profile = self.profile_manager().get_profile(name).await?;
                 
                 println!("Profile: {}", profile.name);
                 if let Some(desc) = &profile.description {
@@ -471,14 +471,14 @@ impl App {
                 Ok(())
             },
             ProfileCommand::Set { name } => {
-                self.profile_manager.set_active_profile(name).await?;
+                self.profile_manager().set_active_profile(name).await?;
                 println!("Active profile set to: {}", name);
                 Ok(())
             },
             ProfileCommand::Create { name, base, description } => {
                 // Create a new profile based on an existing one or default
                 let mut profile = if let Some(base_name) = base {
-                    self.profile_manager.get_profile(base_name).await?
+                    self.profile_manager().get_profile(base_name).await?
                 } else {
                     Profile::default()
                 };
@@ -488,14 +488,14 @@ impl App {
                 profile.description = description.clone();
                 
                 // Save the profile
-                self.profile_manager.save_profile(&profile).await?;
+                self.profile_manager().save_profile(&profile).await?;
                 
                 println!("Profile '{}' created successfully", name);
                 Ok(())
             },
             ProfileCommand::Delete { name } => {
                  // Get a reference to the inner ProfileManager
-                let profile_manager = self.profile_manager.as_ref();
+                let profile_manager = self.profile_manager();
                 
                 // Check if this is the active profile
                 let active_profile = profile_manager.get_active_profile().await?;
@@ -511,7 +511,7 @@ impl App {
             },
             ProfileCommand::Import { path } => {
                 // Get a reference to the inner ProfileManager
-                let profile_manager = self.profile_manager.as_ref();
+                let profile_manager = self.profile_manager();
                 
                 // Import a profile from a file
                 profile_manager.import_profile_from_file(path).await?;
@@ -521,7 +521,7 @@ impl App {
             },
             ProfileCommand::Export { name, path, format } => {
                 // Get a reference to the inner ProfileManager
-                let profile_manager = self.profile_manager.as_ref();
+                let profile_manager = self.profile_manager();
                 
                 // Export a profile to a file
                 let format_str = format.as_deref().unwrap_or("toml");
@@ -575,8 +575,8 @@ impl App {
     }
     
     /// Get a reference to the config
-    pub fn config(&self) -> &AppConfig {
-        &self.config
+    pub fn config(&self) -> &'static AppConfig {
+        AppConfig::instance()
     }
     
     /// Get a reference to the plugin manager
@@ -601,7 +601,7 @@ impl App {
     
     /// Get a reference to the profile manager
     pub fn profile_manager(&self) -> &Arc<ProfileManager> {
-        &self.profile_manager
+        AppConfig::instance().profile_manager()
     }
 }
 
