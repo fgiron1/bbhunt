@@ -45,7 +45,15 @@ RUN cargo build --release
 # Remove the dummy source and copy in the real source
 RUN rm -rf src
 COPY src ./src
-COPY config ./config
+
+# Create necessary directory structure
+RUN mkdir -p config/profiles config/templates
+
+# Copy configuration files
+COPY config/default.toml ./config/
+COPY profiles/base.toml ./config/profiles/
+COPY templates/*.html ./config/templates/ 2>/dev/null || true
+COPY templates/*.md ./config/templates/ 2>/dev/null || true
 
 # Build the application
 RUN cargo build --release
@@ -70,8 +78,11 @@ COPY --from=builder /nuclei-templates /opt/nuclei-templates
 # Copy built binary
 COPY --from=builder /app/target/release/bbhunt /usr/local/bin/
 
+# Copy config directories
+COPY --from=builder /app/config /config
+
 # Create necessary directories
-RUN mkdir -p /data /config
+RUN mkdir -p /data/reports /data/targets
 
 # Set working directory
 WORKDIR /data
@@ -79,6 +90,12 @@ WORKDIR /data
 # Create a non-root user
 RUN useradd -m bbhunt && \
     chown -R bbhunt:bbhunt /data /config
+
+# Set environment variables for configuration
+ENV BBHUNT_GLOBAL_DATA_DIR=/data
+ENV BBHUNT_GLOBAL_CONFIG_DIR=/config
+ENV BBHUNT_GLOBAL_USER_AGENT="bbhunt-docker/0.1.0"
+ENV BBHUNT_GLOBAL_PROFILE=base
 
 # Switch to non-root user
 USER bbhunt

@@ -16,15 +16,15 @@ use crate::template::TemplateEngine;
 
 /// Manager for generating reports
 pub struct ReportManager {
-    config: AppConfig,
+    config: &'static AppConfig,
     template_engine: Arc<tokio::sync::Mutex<TemplateEngine>>,
 }
 
 impl ReportManager {
     /// Create a new report manager
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
-            config: config.clone(),
+            config: config,
             template_engine: Arc::new(tokio::sync::Mutex::new(
                 TemplateEngine::new(PathBuf::new()) // Will be initialized later
             )),

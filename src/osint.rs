@@ -1,32 +1,26 @@
 // src/osint.rs
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use anyhow::{Result, Context, bail};
+use anyhow::{Result, Context};
 use async_trait::async_trait;
 use tracing::{info, debug, warn};
 use tokio::sync::Mutex;
-use serde::{Serialize, Deserialize};
-use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 
 use crate::config::AppConfig;
 use crate::target::TargetData;
-// Import OsintData and related types from target.rs instead of defining duplicates
-use crate::target::{OsintData, CompanyInfo, EmployeeInfo, DocumentInfo, 
-                   DataLeakInfo, DnsRecord, WhoisData, WhoisContact, 
-                   CertificateInfo, AddressInfo};
+use crate::target::{OsintData, DnsRecord, WhoisData, CertificateInfo};
 
-/// OSINT collector with lazy loading of sources
+/// Lazy loading of sources
 pub struct OsintCollector {
-    config: AppConfig,
+    config: &'static AppConfig,
     sources: Arc<Mutex<HashMap<String, Box<dyn OsintSource>>>>,
     initialized: AtomicBool,
 }
 
 impl OsintCollector {
-    /// Create a new OSINT collector
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             sources: Arc::new(Mutex::new(HashMap::new())),
@@ -34,9 +28,7 @@ impl OsintCollector {
         }
     }
     
-    /// Initialize the OSINT collector
     pub async fn initialize(&self) -> Result<()> {
-        // Only initialize once
         if self.initialized.load(Ordering::SeqCst) {
             return Ok(());
         }
@@ -47,25 +39,25 @@ impl OsintCollector {
         // DNS OSINT source
         sources.insert(
             "dns".to_string(), 
-            Box::new(DnsOsintSource::new(self.config.clone()))
+            Box::new(DnsOsintSource::new(self.config))
         );
         
         // WHOIS OSINT source
         sources.insert(
             "whois".to_string(), 
-            Box::new(WhoisOsintSource::new(self.config.clone()))
+            Box::new(WhoisOsintSource::new(self.config))
         );
         
         // SSL Certificate OSINT source
         sources.insert(
             "ssl_certificate".to_string(), 
-            Box::new(SslCertificateOsintSource::new(self.config.clone()))
+            Box::new(SslCertificateOsintSource::new(self.config))
         );
         
         // Certificate Transparency Log OSINT source
         sources.insert(
             "ct_logs".to_string(), 
-            Box::new(CtLogOsintSource::new(self.config.clone()))
+            Box::new(CtLogOsintSource::new(self.config))
         );
         
         // Mark as initialized
@@ -234,12 +226,12 @@ pub trait OsintSource: Send + Sync {
 
 /// DNS information source
 pub struct DnsOsintSource {
-    config: AppConfig,
+    config: &'static AppConfig,
     client: OnceCell<reqwest::Client>,
 }
 
 impl DnsOsintSource {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             client: OnceCell::new(),
@@ -337,12 +329,12 @@ impl OsintSource for DnsOsintSource {
 
 /// WHOIS data source
 pub struct WhoisOsintSource {
-    config: AppConfig,
+    config: &'static AppConfig,
     client: OnceCell<reqwest::Client>,
 }
 
 impl WhoisOsintSource {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             client: OnceCell::new(),
@@ -410,12 +402,12 @@ impl OsintSource for WhoisOsintSource {
 
 /// SSL certificate information source
 pub struct SslCertificateOsintSource {
-    config: AppConfig,
+    config: &'static AppConfig,
     client: OnceCell<reqwest::Client>,
 }
 
 impl SslCertificateOsintSource {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             client: OnceCell::new(),
@@ -498,12 +490,12 @@ impl OsintSource for SslCertificateOsintSource {
 
 /// Certificate Transparency Log source
 pub struct CtLogOsintSource {
-    config: AppConfig,
+    config: &'static AppConfig,
     client: OnceCell<reqwest::Client>,
 }
 
 impl CtLogOsintSource {
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             client: OnceCell::new(),

@@ -1,5 +1,3 @@
-// src/app.rs - Complete implementation with profile system integration
-use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use anyhow::{Result, Context, bail};
@@ -13,7 +11,6 @@ use crate::osint::OsintCollector;
 use crate::profile::{Profile, ProfileManager};
 use crate::scope_filter::ScopeFilter;
 
-/// Main application struct that holds all components and state
 pub struct App {
     plugin_manager: Arc<PluginManager>,
     target_manager: Arc<TargetManager>,
@@ -23,9 +20,9 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new application instance
+
     pub fn new() -> Self {
-        // Get the singleton instance of AppConfig
+        // Get the singleton
         let app_config = AppConfig::instance();
         let profile_manager = app_config.profile_manager().clone();
         
@@ -40,10 +37,7 @@ impl App {
     
 
     pub async fn initialize_with_config(&mut self, config_path: Option<&Path>) -> Result<()> {
-        // Initialize the config singleton
         AppConfig::instance().load(config_path).await?;
-        
-        // Initialize components
         self.plugin_manager.initialize().await?;
         self.target_manager.initialize().await?;
         self.report_manager.initialize().await?;
@@ -53,7 +47,6 @@ impl App {
         Ok(())
     }
     
-    /// Run a specific command
     pub async fn run_command(&self, command: &Command, profile_name: Option<&str>) -> Result<()> {
         if !self.initialized {
             return Err(anyhow::anyhow!("Application not initialized"));

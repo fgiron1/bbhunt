@@ -20,14 +20,14 @@ use crate::scope_filter::ScopeFilter;
 /// Plugin manager for loading and executing plugins
 #[derive(Clone)]
 pub struct PluginManager {
-    config: AppConfig,
+    config: &'static AppConfig,
     profile_manager: Arc<ProfileManager>,
     plugins: Arc<tokio::sync::Mutex<HashMap<String, Box<dyn Plugin>>>>,
 }
 
 impl PluginManager {
     /// Create a new plugin manager
-    pub fn new(config: AppConfig, profile_manager: Arc<ProfileManager>) -> Self {
+    pub fn new(config: &'static AppConfig, profile_manager: Arc<ProfileManager>) -> Self {
         Self {
             config,
             profile_manager,
@@ -47,11 +47,11 @@ impl PluginManager {
     /// Register built-in plugins
     async fn register_default_plugins(&self) -> Result<()> {
         // Create subdomain enumeration plugin
-        let subdomain_plugin = SubdomainEnumPlugin::new(self.config.clone());
+        let subdomain_plugin = SubdomainEnumPlugin::new(self.config);
         self.register_plugin("subdomain_enum", Box::new(subdomain_plugin)).await?;
         
         // Create web scanning plugin
-        let web_scan_plugin = WebScanPlugin::new(self.config.clone());
+        let web_scan_plugin = WebScanPlugin::new(self.config);
         self.register_plugin("web_scan", Box::new(web_scan_plugin)).await?;
         
         debug!("Registered default plugins");
@@ -638,14 +638,14 @@ pub struct Vulnerability {
 
 /// Subdomain enumeration plugin
 pub struct SubdomainEnumPlugin {
-    config: AppConfig,
+    config: &'static AppConfig,
     metadata: PluginMetadata,
     http_client: Option<reqwest::Client>,
 }
 
 impl SubdomainEnumPlugin {
     /// Create a new subdomain enumeration plugin
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             metadata: PluginMetadata {
@@ -845,14 +845,14 @@ impl Plugin for SubdomainEnumPlugin {
 
 /// Web scanning plugin
 pub struct WebScanPlugin {
-    config: AppConfig,
+    config: &'static AppConfig,
     metadata: PluginMetadata,
     http_client: Option<reqwest::Client>,
 }
 
 impl WebScanPlugin {
     /// Create a new web scanning plugin
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             metadata: PluginMetadata {

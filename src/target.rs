@@ -1,8 +1,6 @@
 // src/target.rs
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 use std::net::IpAddr;
-use std::sync::Arc;
 use anyhow::{Result, Context, bail};
 use ipnetwork::IpNetwork;
 use serde::{Serialize, Deserialize};
@@ -13,15 +11,13 @@ use chrono::{DateTime, Utc};
 
 use crate::config::AppConfig;
 
-/// Manager for handling target data
 pub struct TargetManager {
-    config: AppConfig,
+    config: &'static AppConfig,
     targets_cache: tokio::sync::Mutex<HashMap<String, TargetData>>,
 }
 
 impl TargetManager {
-    /// Create a new target manager with application config
-    pub fn new(config: AppConfig) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
             targets_cache: tokio::sync::Mutex::new(HashMap::new()),
