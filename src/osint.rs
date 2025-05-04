@@ -75,12 +75,30 @@ impl OsintCollector {
         info!("Running OSINT collection for target: {}", target.name);
         
         let mut osint_data = target.osint_data.clone();
-        let sources = self.sources.lock().await;
         
-        for (name, source) in sources.iter() {
+        // Get a snapshot of the source names to avoid holding the lock across other async calls
+        let source_names = {
+            let sources = self.sources.lock().await;
+            sources.keys().cloned().collect::<Vec<String>>()
+        }; // Lock released here
+        
+        for name in source_names {
             debug!("Running OSINT source: {}", name);
             
-            match source.collect(target).await {
+            // Access the source reference within a lock scope
+            let result = {
+                let sources = self.sources.lock().await;
+                // Instead of cloning, use the source directly within this scope
+                if let Some(source) = sources.get(&name) {
+                    source.collect(target).await
+                } else {
+                    // Skip if source not found
+                    continue;
+                }
+            };
+            
+            // Process the result outside of the lock
+            match result {
                 Ok(data) => {
                     // Merge data into the combined OSINT data
                     self.merge_osint_data(&mut osint_data, data);

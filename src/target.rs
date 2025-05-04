@@ -150,15 +150,21 @@ impl TargetManager {
     
     /// Get a target by name or ID
     pub async fn get_target_by_name_or_id(&self, name_or_id: &str) -> Result<TargetData> {
-        let cache = self.targets_cache.lock().await;
+        // Get a snapshot of the cache to avoid holding the lock
+        let targets = {
+            let cache = self.targets_cache.lock().await;
+            cache.values().cloned().collect::<Vec<TargetData>>()
+        }; // Lock released here
         
         // Try to find by ID first
-        if let Some(target) = cache.get(name_or_id) {
-            return Ok(target.clone());
+        for target in &targets {
+            if target.id == name_or_id {
+                return Ok(target.clone());
+            }
         }
         
         // Try to find by name
-        for target in cache.values() {
+        for target in targets {
             if target.name == name_or_id {
                 return Ok(target.clone());
             }
@@ -166,7 +172,7 @@ impl TargetManager {
         
         bail!("Target not found: {}", name_or_id)
     }
-    
+
     /// List all targets
     pub async fn list_targets(&self) -> Result<Vec<TargetData>> {
         let cache = self.targets_cache.lock().await;
@@ -258,9 +264,8 @@ impl TargetManager {
         
         let mut entries = fs::read_dir(&targets_dir).await
             .context(format!("Failed to read targets directory: {}", targets_dir.display()))?;
-            
-        let mut loaded_count = 0;
-        let mut cache = self.targets_cache.lock().await;
+        
+        let mut loaded_targets = Vec::new();
         
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -268,18 +273,13 @@ impl TargetManager {
             if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
                 if let Some(file_stem) = path.file_stem() {
                     if let Some(id) = file_stem.to_str() {
-                        // Don't hold the lock during I/O
-                        drop(cache);
-                        
+                        // Load the target without holding any locks
                         match self.load_target(id).await {
                             Ok(target) => {
-                                cache = self.targets_cache.lock().await;
-                                cache.insert(id.to_string(), target);
-                                loaded_count += 1;
+                                loaded_targets.push(target);
                             },
                             Err(e) => {
                                 error!("Failed to load target {}: {}", id, e);
-                                cache = self.targets_cache.lock().await;
                             }
                         }
                     }
@@ -287,7 +287,13 @@ impl TargetManager {
             }
         }
         
-        info!("Loaded {} targets", loaded_count);
+        // Now update the cache all at once, minimizing lock time
+        let mut cache = self.targets_cache.lock().await;
+        for target in loaded_targets {
+            cache.insert(target.id.clone(), target);
+        }
+        
+        info!("Loaded {} targets", cache.len());
         Ok(())
     }
 

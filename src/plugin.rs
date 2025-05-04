@@ -1,5 +1,4 @@
-// src/plugin.rs
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,18 +20,20 @@ use crate::scope_filter::ScopeFilter;
 #[derive(Clone)]
 pub struct PluginManager {
     config: &'static AppConfig,
-    profile_manager: Arc<ProfileManager>,
     plugins: Arc<tokio::sync::Mutex<HashMap<String, Box<dyn Plugin>>>>,
 }
 
 impl PluginManager {
     /// Create a new plugin manager
-    pub fn new(config: &'static AppConfig, profile_manager: Arc<ProfileManager>) -> Self {
+    pub fn new(config: &'static AppConfig) -> Self {
         Self {
             config,
-            profile_manager,
             plugins: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
+    }
+
+    fn get_profile_manager(&self) -> ProfileManager {
+        self.config.profile_manager()
     }
 
     /// Initialize the plugin manager
@@ -72,12 +73,12 @@ impl PluginManager {
         Ok(())
     }
     
-    /// Run a plugin with the specified target and options
     pub async fn run_plugin(
         &self, 
         plugin_name: &str, 
         target: &str, 
-        options: Option<HashMap<String, Value>>
+        options: Option<HashMap<String, Value>>,
+        profile: Option<&Profile>
     ) -> Result<PluginResult> {
         let mut plugins = self.plugins.lock().await;
         
@@ -86,38 +87,19 @@ impl PluginManager {
         
         info!("Running plugin '{}' on target '{}'", plugin_name, target);
         
-        let start_time = std::time::Instant::now();
-        
-        // Run the plugin
-        let mut result = plugin.execute(target, options).await
-            .context(format!("Failed to execute plugin: {}", plugin_name))?;
-        
-        // Set execution time
-        result.execution_time = start_time.elapsed();
-        
-        info!("Plugin '{}' completed in {:?}", plugin_name, result.execution_time);
-        
-        Ok(result)
-    }
-    
-    /// Run a plugin with profile-based settings
-    pub async fn run_plugin_with_profile(
-        &self, 
-        plugin_name: &str, 
-        target: &str, 
-        options: Option<HashMap<String, Value>>,
-        profile: Option<&Profile>
-    ) -> Result<PluginResult> {
-        let profile = if let Some(p) = profile {
+        // Get the profile - either provided or from active profile
+        let effective_profile = if let Some(p) = profile {
             p.clone()
         } else {
-            self.profile_manager.get_active_profile().await?
+            // Get a fresh ProfileManager and then get the active profile
+            let profile_manager = self.get_profile_manager();
+            profile_manager.get_active_profile().await?
         };
         
         // Merge options from profile if available
         let merged_options = if let Some(mut opts) = options {
             // If profile has tool-specific options for this plugin, add them
-            if let Some(tool_profile) = profile.tools.get(plugin_name) {
+            if let Some(tool_profile) = effective_profile.tools.get(plugin_name) {
                 for (key, value) in &tool_profile.options {
                     if !opts.contains_key(key) {
                         opts.insert(key.clone(), value.clone());
@@ -126,7 +108,7 @@ impl PluginManager {
             }
             
             // Add profile default options if not already set
-            for (key, value) in &profile.default_options {
+            for (key, value) in &effective_profile.default_options {
                 if !opts.contains_key(key) {
                     opts.insert(key.clone(), value.clone());
                 }
@@ -135,19 +117,29 @@ impl PluginManager {
             Some(opts)
         } else {
             // If no options provided, use profile options if available
-            if let Some(tool_profile) = profile.tools.get(plugin_name) {
+            if let Some(tool_profile) = effective_profile.tools.get(plugin_name) {
                 if !tool_profile.options.is_empty() {
                     Some(tool_profile.options.clone())
                 } else {
-                    Some(profile.default_options.clone())
+                    Some(effective_profile.default_options.clone())
                 }
             } else {
-                Some(profile.default_options.clone())
+                Some(effective_profile.default_options.clone())
             }
         };
         
-        // Run the plugin with merged options
-        self.run_plugin(plugin_name, target, merged_options).await
+        let start_time = std::time::Instant::now();
+        
+        // Execute the plugin with merged options
+        let mut result = plugin.execute(target, merged_options).await
+            .context(format!("Failed to execute plugin: {}", plugin_name))?;
+        
+        // Set execution time
+        result.execution_time = start_time.elapsed();
+        
+        info!("Plugin '{}' completed in {:?}", plugin_name, result.execution_time);
+        
+        Ok(result)
     }
     
     /// Get all available plugins
@@ -240,19 +232,26 @@ impl PluginManager {
         // Create a channel for results
         let (tx, mut rx) = tokio::sync::mpsc::channel(max_concurrent);
         
-        // Track dependencies
-        let mut completed_tasks = std::collections::HashSet::new();
+        // Track dependencies using an atomic reference
+        let completed_tasks = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
         let mut pending_tasks: Vec<TaskDefinition> = tasks;
         let mut results = Vec::new();
         
         // Process tasks in dependency order
         while !pending_tasks.is_empty() {
             // Find tasks with satisfied dependencies
-            let runnable_tasks: Vec<TaskDefinition> = pending_tasks
-                .iter()
-                .filter(|task| task.dependencies.iter().all(|dep| completed_tasks.contains(dep)))
-                .cloned()
-                .collect();
+            let mut runnable_tasks = Vec::new();
+            
+            {
+                // Scope the lock to avoid deadlocks
+                let completed = completed_tasks.lock().await;
+                
+                for task in &pending_tasks {
+                    if task.dependencies.iter().all(|dep| completed.contains(dep)) {
+                        runnable_tasks.push(task.clone());
+                    }
+                }
+            } // Lock released here
             
             if runnable_tasks.is_empty() && !pending_tasks.is_empty() {
                 bail!("Circular dependency detected in tasks");
@@ -263,11 +262,13 @@ impl PluginManager {
             // Launch tasks
             let mut handles = Vec::new();
             
-            for task in runnable_tasks {
+            for task in &runnable_tasks {
                 let task_id = task.id.clone();
+                let task_clone = task.clone();
                 let semaphore_clone = semaphore.clone();
                 let tx_clone = tx.clone();
                 let self_clone = self.clone();
+                let completed_clone = completed_tasks.clone();
                 
                 let handle = tokio::spawn(async move {
                     // Acquire a permit from the semaphore
@@ -275,26 +276,25 @@ impl PluginManager {
                         .expect("Failed to acquire semaphore permit");
                     
                     // Execute the task
-                    let result = match self_clone.run_plugin(&task.plugin, &task.target, task.options).await {
+                    let result = match self_clone.run_plugin(&task_clone.plugin, &task_clone.target, task_clone.options, None).await {
                         Ok(plugin_result) => {
-                            
                             let execution_time = plugin_result.execution_time;
                             TaskResult {
-                                task_id: task.id.clone(),
-                                plugin: task.plugin.clone(),
-                                target: task.target.clone(),
+                                task_id: task_clone.id.clone(),
+                                plugin: task_clone.plugin.clone(),
+                                target: task_clone.target.clone(),
                                 status: TaskStatus::Completed,
-                                result: Some(plugin_result), // plugin_result moved here
+                                result: Some(plugin_result),
                                 error: None,
-                                execution_time, // Use the stored value
+                                execution_time,
                             }
                         },
                         Err(e) => {
-                            error!("Task {} failed: {}", task.id, e);
+                            error!("Task {} failed: {}", task_clone.id, e);
                             TaskResult {
-                                task_id: task.id.clone(),
-                                plugin: task.plugin.clone(),
-                                target: task.target.clone(),
+                                task_id: task_clone.id.clone(),
+                                plugin: task_clone.plugin.clone(),
+                                target: task_clone.target.clone(),
                                 status: TaskStatus::Failed,
                                 result: None,
                                 error: Some(e.to_string()),
@@ -303,19 +303,27 @@ impl PluginManager {
                         }
                     };
                     
+                    // Mark as completed for dependency tracking
+                    {
+                        let mut completed = completed_clone.lock().await;
+                        completed.insert(task_id);
+                    }
+                    
                     // Send the result
                     tx_clone.send(result).await
                         .expect("Failed to send task result");
                 });
                 
                 handles.push(handle);
-                
-                // Mark as completed for dependency tracking
-                completed_tasks.insert(task_id);
             }
             
-            // Remove processed tasks from pending
-            pending_tasks.retain(|task| !completed_tasks.contains(&task.id));
+            // Remove processed tasks from pending - we need to do this AFTER spawning tasks
+            // to avoid race conditions
+            let task_ids: HashSet<String> = runnable_tasks.iter()
+                .map(|task| task.id.clone())
+                .collect();
+                
+            pending_tasks.retain(|task| !task_ids.contains(&task.id));
             
             // Wait for all spawned tasks to complete
             for handle in handles {
@@ -335,7 +343,7 @@ impl PluginManager {
         
         Ok(results)
     }
-    
+
     /// Execute tasks with profile-based settings
     pub async fn execute_tasks_with_profile(
         &self,

@@ -298,7 +298,7 @@ impl ProfileManager {
     /// Initialize the profile manager
     pub async fn initialize(&self) -> Result<()> {
         // Create profiles directory if it doesn't exist
-        let profiles_dir = self.config_dir.join("profiles");
+        let profiles_dir = self.config_dir.clone();
         
         if !profiles_dir.exists() {
             fs::create_dir_all(&profiles_dir).await
@@ -311,6 +311,24 @@ impl ProfileManager {
         // Load all profiles
         self.load_all_profiles().await?;
         
+        // Ensure the active profile is valid
+        let active_profile_name = {
+            let ap = self.active_profile.read().await;
+            (*ap).clone()
+        };
+        
+        // Verify that the active profile exists
+        let profiles = self.profiles.read().await;
+        if !profiles.contains_key(&active_profile_name) {
+            // If not, try to set it to "base"
+            drop(profiles); // Release the lock
+            if self.profiles.read().await.contains_key("base") {
+                let mut ap = self.active_profile.write().await;
+                *ap = "base".to_string();
+                info!("Set active profile to 'base'");
+            }
+        }
+        
         info!("Profile manager initialized successfully");
         Ok(())
     }
@@ -318,10 +336,10 @@ impl ProfileManager {
     /// Create default profiles
     async fn create_default_profiles(&self) -> Result<()> {
         // Default profile
-        let default_profile = Profile {
-            name: "default".to_string(),
-            description: Some("Default profile with standard settings".to_string()),
-            tags: vec!["default".to_string()],
+        let base_profile = Profile {
+            name: "base".to_string(), // Changed from "default" to "base"
+            description: Some("Default base profile with standard settings".to_string()),
+            tags: vec!["default".to_string(), "base".to_string()],
             resource_limits: ResourceLimits::default(),
             scope: ScopeConfig::default(),
             tools: HashMap::new(),
@@ -333,7 +351,7 @@ impl ProfileManager {
             program_configs: HashMap::new(),
         };
         
-        self.save_profile(&default_profile).await?;
+        self.save_profile(&base_profile).await?;
         
         // Safe profile with minimal impact
         let safe_profile = Profile {
@@ -473,16 +491,18 @@ impl ProfileManager {
         
         let mut entries = fs::read_dir(&profiles_dir).await
             .context(format!("Failed to read profiles directory: {}", profiles_dir.display()))?;
-            
-        let mut loaded_count = 0;
-        let mut profiles = self.profiles.write().await;
         
+        let mut loaded_count = 0;
+        let mut loaded_profiles = Vec::new();
+            
+        // Process one entry at a time without collecting
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             
             if path.is_file() && path.extension().map_or(false, |ext| ext == "json" || ext == "toml") {
                 if let Some(stem) = path.file_stem() {
                     if let Some(name) = stem.to_str() {
+                        // Load content without holding lock
                         let content = fs::read_to_string(&path).await
                             .context(format!("Failed to read profile file: {}", path.display()))?;
                             
@@ -495,7 +515,7 @@ impl ProfileManager {
                         };
                         
                         if profile.enabled {
-                            profiles.insert(name.to_string(), profile);
+                            loaded_profiles.push((name.to_string(), profile));
                             loaded_count += 1;
                         }
                     }
@@ -503,28 +523,41 @@ impl ProfileManager {
             }
         }
         
+        // Now update the cache all at once, minimizing lock time
+        {
+            let mut profiles = self.profiles.write().await;
+            for (name, profile) in loaded_profiles {
+                profiles.insert(name, profile);
+            }
+        }
+        
         info!("Loaded {} profiles", loaded_count);
         Ok(())
     }
-    
+
     /// Save a profile to disk
     pub async fn save_profile(&self, profile: &Profile) -> Result<()> {
-        let profiles_dir = self.config_dir.join("profiles");
+        // Fix the profile path to avoid duplicate "profiles" directories
+        // Use the config_dir directly instead of joining with "profiles" again
+        let profile_path = self.config_dir.join(format!("{}.json", profile.name));
         
-        if !profiles_dir.exists() {
-            fs::create_dir_all(&profiles_dir).await
-                .context(format!("Failed to create profiles directory: {}", profiles_dir.display()))?;
+        // Create parent directories if they don't exist
+        if let Some(parent) = profile_path.parent() {
+            if !parent.exists() {
+                fs::create_dir_all(parent).await
+                    .context(format!("Failed to create profile directory: {}", parent.display()))?;
+            }
         }
         
-        let profile_path = profiles_dir.join(format!("{}.json", profile.name));
-        
+        // Serialize the profile
         let json = serde_json::to_string_pretty(profile)
-            .context("Failed to serialize profile")?;
-            
+            .context("Failed to serialize profile to JSON")?;
+        
+        // Write to file
         fs::write(&profile_path, json).await
             .context(format!("Failed to write profile file: {}", profile_path.display()))?;
-            
-        debug!("Saved profile {} to {}", profile.name, profile_path.display());
+        
+        debug!("Saved profile '{}' to {}", profile.name, profile_path.display());
         
         // Update in-memory profile
         let mut profiles = self.profiles.write().await;
@@ -533,29 +566,61 @@ impl ProfileManager {
         Ok(())
     }
     
-    /// Set the active profile
     pub async fn set_active_profile(&self, name: &str) -> Result<()> {
-        let profiles = self.profiles.read().await;
+        // Check if profile exists without holding the write lock
+        {
+            let profiles = self.profiles.read().await;
+            if !profiles.contains_key(name) {
+                bail!("Profile not found: {}", name);
+            }
+        } // Read lock released here
         
-        if !profiles.contains_key(name) {
-            bail!("Profile not found: {}", name);
+        // Now set the active profile with write lock
+        {
+            let mut active_profile = self.active_profile.write().await;
+            *active_profile = name.to_string();
         }
-        
-        let mut active_profile = self.active_profile.write().await;
-        *active_profile = name.to_string();
         
         info!("Active profile set to: {}", name);
         Ok(())
     }
     
-    /// Get the active profile
     pub async fn get_active_profile(&self) -> Result<Profile> {
         let profiles = self.profiles.read().await;
         let active_profile = self.active_profile.read().await;
         
-        profiles.get(&*active_profile)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("Active profile not found: {}", *active_profile))
+        // Try to get the active profile from the in-memory cache
+        if let Some(profile) = profiles.get(&*active_profile) {
+            return Ok(profile.clone());
+        }
+        
+        // If not found in memory, release the locks
+        drop(profiles);
+        drop(active_profile);
+        
+        // Try to load all profiles again to make sure we have the latest
+        self.load_all_profiles().await?;
+        
+        // Check again after reloading
+        let profiles = self.profiles.read().await;
+        let active_profile = self.active_profile.read().await;
+        
+        if let Some(profile) = profiles.get(&*active_profile) {
+            return Ok(profile.clone());
+        }
+        
+        // If still not found, try the base profile as a fallback
+        if let Some(profile) = profiles.get("base") {
+            // Update the active profile to "base" since the original wasn't found
+            drop(active_profile);
+            let mut active = self.active_profile.write().await;
+            *active = "base".to_string();
+            info!("Active profile not found, falling back to 'base'");
+            return Ok(profile.clone());
+        }
+        
+        // If even the base profile isn't found, we can't continue
+        bail!("Active profile not found: {} and fallback 'base' profile not found", *active_profile)
     }
     
     /// Get a profile by name
@@ -675,7 +740,7 @@ impl ProfileManager {
     }
     
     /// Create a configuration for a specific bug bounty program
-    pub async fn create_program_profile(&self, program_name: &str, profile: Profile) -> Result<()> {
+    pub async fn create_program_profile(&self, _program_name: &str, profile: Profile) -> Result<()> {
         self.save_profile(&profile).await
     }
     

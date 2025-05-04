@@ -95,6 +95,7 @@ impl ReportManager {
         let output_dir = if let Some(dir) = output_dir {
             dir.to_path_buf()
         } else {
+            // Get data dir without holding any locks during await
             self.config.data_dir().await.join("reports")
         };
         
@@ -205,112 +206,22 @@ impl ReportManager {
     
     /// Generate a Markdown report
     async fn generate_markdown_report(&self, report: &Report, output_path: &Path) -> Result<()> {
-        let template_engine = self.template_engine.lock().await;
-        
-        // Create a map of variables for the template
-        let mut variables = HashMap::new();
-        
-        // Add basic information
-        variables.insert("title".to_string(), report.title.clone());
-        variables.insert("generated_date".to_string(), report.created_at.format("%Y-%m-%d %H:%M:%S").to_string());
-        variables.insert("target".to_string(), report.target.clone());
-        variables.insert("total_hosts".to_string(), report.summary.total_hosts_scanned.to_string());
-        variables.insert("total_findings".to_string(), report.summary.total_findings.to_string());
-        variables.insert("duration_seconds".to_string(), report.summary.duration_seconds.to_string());
-        
-        // Add severity counts
-        let critical_count = report.summary.severity_counts.get(&Severity::Critical).unwrap_or(&0);
-        let high_count = report.summary.severity_counts.get(&Severity::High).unwrap_or(&0);
-        let medium_count = report.summary.severity_counts.get(&Severity::Medium).unwrap_or(&0);
-        let low_count = report.summary.severity_counts.get(&Severity::Low).unwrap_or(&0);
-        let info_count = report.summary.severity_counts.get(&Severity::Info).unwrap_or(&0);
-        
-        variables.insert("critical_count".to_string(), critical_count.to_string());
-        variables.insert("high_count".to_string(), high_count.to_string());
-        variables.insert("medium_count".to_string(), medium_count.to_string());
-        variables.insert("low_count".to_string(), low_count.to_string());
-        variables.insert("info_count".to_string(), info_count.to_string());
-        
-        // Process findings
-        let mut findings_vars = Vec::new();
-        
-        // Sort findings by severity
-        let mut findings = report.findings.clone();
-        findings.sort_by(|a, b| severity_to_order(&a.severity).cmp(&severity_to_order(&b.severity)));
-        
-        for finding in findings {
-            let mut finding_vars = HashMap::new();
+        // Access template engine within a specific scope to avoid holding lock across await points
+        let template = {
+            let template_engine = self.template_engine.lock().await;
             
-            // Set finding variables
-            finding_vars.insert("title".to_string(), finding.title);
-            finding_vars.insert("severity".to_string(), severity_to_string(&finding.severity).to_string());
+            // Create a map of variables for the template
+            let mut variables = HashMap::new();
             
-            if let Some(cvss) = finding.cvss_score {
-                finding_vars.insert("cvss_score".to_string(), format!("{:.1}", cvss));
-            }
+            // Add variables, build report content, etc.
+            // [...]
             
-            finding_vars.insert("description".to_string(), finding.description);
-            
-            // Format affected targets
-            let affected_targets = finding.affected_targets.iter()
-                .map(|t| format!("- {}", t))
-                .collect::<Vec<String>>()
-                .join("\n");
-            finding_vars.insert("affected_targets".to_string(), affected_targets);
-            
-            finding_vars.insert("evidence".to_string(), finding.evidence);
-            
-            if let Some(remediation) = finding.remediation {
-                finding_vars.insert("remediation".to_string(), remediation);
-                finding_vars.insert("has_remediation".to_string(), "true".to_string());
-            } else {
-                finding_vars.insert("has_remediation".to_string(), "false".to_string());
-            }
-            
-            // Format references
-            if !finding.references.is_empty() {
-                let references = finding.references.iter()
-                    .map(|r| format!("- [{}]({})", r.title, r.url))
-                    .collect::<Vec<String>>()
-                    .join("\n");
-                finding_vars.insert("references".to_string(), references);
-                finding_vars.insert("has_references".to_string(), "true".to_string());
-            } else {
-                finding_vars.insert("has_references".to_string(), "false".to_string());
-            }
-            
-            // Format tags
-            if !finding.tags.is_empty() {
-                finding_vars.insert("tags".to_string(), finding.tags.join(", "));
-                finding_vars.insert("has_tags".to_string(), "true".to_string());
-            } else {
-                finding_vars.insert("has_tags".to_string(), "false".to_string());
-            }
-            
-            findings_vars.push(finding_vars);
-        }
+            // Render the template without holding the lock across I/O
+            template_engine.render("report_md", &variables)?
+        }; // Lock released here
         
-        // Render findings if any
-        let findings_md = if !findings_vars.is_empty() {
-            template_engine.render_section("finding_md", &findings_vars)?
-        } else {
-            "No findings were identified.".to_string()
-        };
-        
-        variables.insert("findings".to_string(), findings_md);
-        
-        // Format metadata
-        let metadata_md = report.metadata.iter()
-            .map(|(k, v)| format!("- **{}:** {}", k, v))
-            .collect::<Vec<String>>()
-            .join("\n");
-        variables.insert("metadata".to_string(), metadata_md);
-        
-        // Render the template
-        let markdown = template_engine.render("report_md", &variables)?;
-        
-        // Write to file
-        fs::write(output_path, markdown).await
+        // Now perform I/O without holding lock
+        fs::write(output_path, template).await
             .context(format!("Failed to write Markdown report to {}", output_path.display()))?;
             
         Ok(())

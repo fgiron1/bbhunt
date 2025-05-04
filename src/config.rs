@@ -53,7 +53,7 @@ impl Default for GlobalConfig {
             max_memory: 4096, // 4GB
             max_cpu: num_cpus::get(),
             user_agent: format!("bbhunt/{}", env!("CARGO_PKG_VERSION")),
-            default_profile: "base".to_string(),
+            default_profile: "base".to_string(), // Changed from "default" to "base"
         }
     }
 }
@@ -113,8 +113,9 @@ impl Default for TargetConfig {
 // Singleton implementation for AppConfig
 pub struct AppConfig {
     inner: Arc<Mutex<Config>>,
-    profile_manager: Arc<ProfileManager>,
-    // Track the config file path
+    // Instead of storing a direct reference to ProfileManager, 
+    // store the path only and create ProfileManager on demand
+    profile_dir: PathBuf,
     config_path: Arc<Mutex<Option<PathBuf>>>,
 }
 
@@ -122,29 +123,23 @@ pub struct AppConfig {
 static APP_CONFIG_INSTANCE: OnceCell<AppConfig> = OnceCell::new();
 
 impl AppConfig {
-    // Get or initialize the AppConfig singleton
     pub fn instance() -> &'static AppConfig {
         APP_CONFIG_INSTANCE.get_or_init(|| {
             let config = Config::default();
-            let profile_manager = Arc::new(ProfileManager::new(PathBuf::from("./profiles")));
+            let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+            let profile_dir = home_dir.join(".bbhunt/config/profiles");
             
             AppConfig {
                 inner: Arc::new(Mutex::new(config)),
-                profile_manager,
+                profile_dir,
                 config_path: Arc::new(Mutex::new(None)),
             }
         })
     }
     
     // Constructor now private to enforce singleton pattern
-    fn new() -> Self {
-        let profile_manager = Arc::new(ProfileManager::new(PathBuf::from("./profiles")));
-        
-        Self {
-            inner: Arc::new(Mutex::new(Config::default())),
-            profile_manager,
-            config_path: Arc::new(Mutex::new(None)),
-        }
+    fn new() -> () {
+        panic!("Use AppConfig::instance() to get the singleton instance.");
     }
     
     pub async fn load(&self, config_path: Option<&Path>) -> Result<()> {
@@ -157,9 +152,10 @@ impl AppConfig {
         };
         
         // Store the config path for later use
-        let mut path_storage = self.config_path.lock().await;
-        *path_storage = Some(config_file_path.clone());
-        drop(path_storage);
+        {
+            let mut path_storage = self.config_path.lock().await;
+            *path_storage = Some(config_file_path.clone());
+        } // Released here
         
         // Load config from file if it exists
         let mut config = if config_file_path.exists() {
@@ -179,27 +175,34 @@ impl AppConfig {
         self.apply_environment_vars(&mut config);
         
         // Update the stored configuration
-        let mut inner = self.inner.lock().await;
-        *inner = config;
+        {
+            let mut inner = self.inner.lock().await;
+            *inner = config;
+        } // Released here
         
         // Initialize directories
         self.initialize_directories().await?;
         
         // Initialize profile system
-        self.profile_manager.initialize().await?;
+        let profile_manager = self.profile_manager();
+        profile_manager.initialize().await?;
         
-        // Set default profile from config
-        let config = self.inner.lock().await;
+        // Set default profile from config - important to get this outside the mutex
+        let default_profile = {
+            let config = self.inner.lock().await;
+            config.global.default_profile.clone()
+        }; // Lock dropped here
+        
         // Only set if the profile exists
-        let profiles = self.profile_manager.list_profiles().await;
-        if profiles.contains(&config.global.default_profile) {
-            self.profile_manager.set_active_profile(&config.global.default_profile).await?;
+        let profiles = profile_manager.list_profiles().await;
+        if profiles.contains(&default_profile) {
+            profile_manager.set_active_profile(&default_profile).await?;
         }
         
         info!("Configuration loaded successfully");
         Ok(())
     }
-    
+
     /// Apply environment variables to override configuration
     fn apply_environment_vars(&self, config: &mut Config) {
         // Load environment variables with a consistent prefix
@@ -401,7 +404,6 @@ impl AppConfig {
         self.inner.lock().await.clone()
     }
     
-    // Update the configuration
     pub async fn update<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut Config) -> Result<()>,
@@ -410,45 +412,45 @@ impl AppConfig {
         f(&mut config)
     }
     
-    // Get the active profile - no need to clone the result
     pub async fn get_active_profile(&self) -> Result<Profile> {
-        self.profile_manager.get_active_profile().await
+        self.profile_manager().get_active_profile().await
     }
     
-    // Set the active profile
     pub async fn set_active_profile(&self, name: &str) -> Result<()> {
-        self.profile_manager.set_active_profile(name).await
+        self.profile_manager().set_active_profile(name).await
     }
     
-    // Get a profile by name
     pub async fn get_profile(&self, name: &str) -> Result<Profile> {
-        self.profile_manager.get_profile(name).await
+        self.profile_manager().get_profile(name).await
     }
     
-    // List available profiles
     pub async fn list_profiles(&self) -> Result<Vec<String>> {
-        Ok(self.profile_manager.list_profiles().await)
+        Ok(self.profile_manager().list_profiles().await)
     }
     
-    // Get the profile manager - return a reference to avoid clone
-    pub fn profile_manager(&self) -> &Arc<ProfileManager> {
-        &self.profile_manager
+    pub fn profile_manager(&self) -> ProfileManager {
+        ProfileManager::new(self.profile_dir.clone())
     }
     
-    // Get plugin configuration - avoid returning Option<PluginConfig> which could be cloned
     pub async fn get_plugin_config(&self, name: &str) -> Option<PluginConfig> {
         let config = self.inner.lock().await;
         config.plugins.get(name).cloned()
     }
     
-    // Get data directory path
     pub async fn data_dir(&self) -> PathBuf {
-        self.inner.lock().await.global.data_dir.clone()
+        let path = {
+            let config = self.inner.lock().await;
+            config.global.data_dir.clone()
+        }; // Lock released here
+        path
     }
     
-    // Get config directory path
     pub async fn config_dir(&self) -> PathBuf {
-        self.inner.lock().await.global.config_dir.clone()
+        let path = {
+            let config = self.inner.lock().await;
+            config.global.config_dir.clone()
+        }; // Lock released here
+        path
     }
 }
 

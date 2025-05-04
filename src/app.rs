@@ -24,15 +24,18 @@ impl App {
     pub fn new() -> Self {
         // Get the singleton
         let app_config = AppConfig::instance();
-        let profile_manager = app_config.profile_manager().clone();
         
         Self {
-            plugin_manager: Arc::new(PluginManager::new(app_config, profile_manager)),
+            plugin_manager: Arc::new(PluginManager::new(app_config)),
             target_manager: Arc::new(TargetManager::new(app_config)),
             report_manager: Arc::new(ReportManager::new(app_config)),
             osint_collector: Arc::new(OsintCollector::new(app_config)),
             initialized: false,
         }
+    }
+
+    pub fn profile_manager(&self) -> ProfileManager {
+        AppConfig::instance().profile_manager()
     }
     
 
@@ -211,7 +214,7 @@ impl App {
                 };
                 
                 // Run the plugin with profile support
-                let result = self.plugin_manager.run_plugin_with_profile(plugin, target, parsed_options, Some(profile)).await?;
+                let result = self.plugin_manager.run_plugin(plugin, target, parsed_options, Some(profile)).await?;
                 
                 // Display results
                 println!("Status: {:?}", result.status);
@@ -592,10 +595,6 @@ impl App {
         &self.osint_collector
     }
     
-    /// Get a reference to the profile manager
-    pub fn profile_manager(&self) -> &Arc<ProfileManager> {
-        AppConfig::instance().profile_manager()
-    }
 }
 
 /// Command enum representing all possible CLI commands
